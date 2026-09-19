@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -168,6 +169,76 @@ func TestGetPutDel(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPutStdinCapped pins the stdin cap on `put`: an oversized stream is refused with
+// ErrValueTooLarge after at most limit+1 bytes, never buffered whole, and an exact-limit value still
+// stores. The reader counts what was consumed so the test can prove the cap, not just the error.
+func TestPutStdinCapped(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		encoded bool
+		size    int64
+		wantErr error
+	}{
+		{"raw at limit stores", false, kvlite.MaxValueBytes, nil},
+		{"raw one over refused", false, kvlite.MaxValueBytes + 1, kvlite.ErrValueTooLarge},
+		{"raw endless refused", false, 1 << 40, kvlite.ErrValueTooLarge},
+		{"hex endless refused", true, 1 << 40, kvlite.ErrValueTooLarge},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			src := &countingReader{r: io.LimitReader(zeroReader{}, tt.size)}
+			raw, err := readValue(src, tt.encoded)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("readValue err = %v, want %v", err, tt.wantErr)
+			}
+			limit := maxStdinValue(tt.encoded)
+			if src.n > limit+1 {
+				t.Fatalf("consumed %d bytes from stdin, cap is %d+1", src.n, limit)
+			}
+			if err == nil && int64(len(raw)) != tt.size {
+				t.Fatalf("read %d bytes, want %d", len(raw), tt.size)
+			}
+		})
+	}
+	t.Run("through the command", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		app := cli.New("kvlite", "test")
+		app.Register(Commands()...)
+		var out, errb bytes.Buffer
+		env := &cli.Env{Stdout: &out, Stderr: &errb, Stdin: io.LimitReader(zeroReader{}, kvlite.MaxValueBytes+1)}
+		err := app.Run(context.Background(), env, []string{"put", "-dir", dir, "k", "-"})
+		if !errors.Is(err, kvlite.ErrValueTooLarge) {
+			t.Fatalf("put err = %v, want ErrValueTooLarge", err)
+		}
+		if errors.Is(err, cli.ErrUsage) {
+			t.Fatalf("an oversized value is a store error, not a usage error: %v", err)
+		}
+	})
+}
+
+// zeroReader is an endless stream of zero bytes.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+// countingReader counts the bytes handed out by r.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func TestScan(t *testing.T) {

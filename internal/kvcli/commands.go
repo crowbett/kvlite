@@ -112,6 +112,30 @@ func (c *common) open(readOnly bool, opts ...kvlite.Option) (*kvlite.DB, error) 
 	return db, nil
 }
 
+// maxStdinValue bounds how much of stdin `put` reads: the store refuses anything above
+// kvlite.MaxValueBytes, so reading further would only buffer bytes destined to be rejected. Encoded
+// input (hex doubles, base64 grows by 4/3) gets 2x plus room for a trailing newline.
+func maxStdinValue(encoded bool) int64 {
+	if encoded {
+		return 2*kvlite.MaxValueBytes + 16
+	}
+	return kvlite.MaxValueBytes
+}
+
+// readValue reads a value from stdin with a hard cap (see maxStdinValue) so an oversized or endless
+// stream fails with ErrValueTooLarge instead of exhausting memory before the store can refuse it.
+func readValue(r io.Reader, encoded bool) ([]byte, error) {
+	limit := maxStdinValue(encoded)
+	raw, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read stdin: %w", err)
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("read stdin: more than %d bytes: %w", limit, kvlite.ErrValueTooLarge)
+	}
+	return raw, nil
+}
+
 // joinClose folds a Close error into err when err is nil; used as `defer func() { err = joinClose(err, db.Close()) }()`.
 func joinClose(err, cerr error) error {
 	if cerr != nil && err == nil {
@@ -200,9 +224,9 @@ func putCommand() *cli.Command {
 					return err
 				}
 			} else {
-				raw, err := io.ReadAll(env.Stdin)
+				raw, err := readValue(env.Stdin, c.hex || c.base64)
 				if err != nil {
-					return fmt.Errorf("read stdin: %w", err)
+					return err
 				}
 				if c.hex || c.base64 {
 					// Encoded stdin: tolerate a trailing newline from `echo`.
