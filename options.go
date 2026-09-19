@@ -1,6 +1,5 @@
-// STUB written by the integrator to freeze the contract; workstream B (engine) owns this file and replaces
-// the bodies, keeping every exported signature. The option set below is real and tested; WS-B extends the
-// unexported options struct but must not change any With* signature (frozen contract, see docs/PLAN.md).
+// Workstream B (engine) owns this file. The Option set is a frozen contract (docs/PLAN.md): the
+// unexported options struct may grow, no With* signature changes.
 
 package kvlite
 

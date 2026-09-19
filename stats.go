@@ -1,6 +1,5 @@
-// STUB written by the integrator to freeze the contract; workstream B (engine) owns this file and replaces
-// the bodies, keeping every exported signature. Stats is a frozen contract (docs/PLAN.md): fields may be
-// added at the end, never renamed or removed.
+// Workstream B (engine) owns this file. Stats is a frozen contract (docs/PLAN.md): fields may be added
+// at the end, never renamed or removed. Repairs is the one WS-B addition (WithRepair's skip count).
 
 package kvlite
 
@@ -49,4 +48,7 @@ type Stats struct {
 	LastCompaction time.Time
 	// LastCompactionDur is how long the last compaction took.
 	LastCompactionDur time.Duration
+
+	// Repairs is the number of corrupt records Open skipped under WithRepair (0 without it).
+	Repairs int
 }

@@ -1,5 +1,5 @@
-// STUB written by the integrator to freeze the contract; workstream B (engine) owns this file and replaces
-// the bodies, keeping every exported signature. The sentinels and CorruptError below are real and tested.
+// Workstream B (engine) owns this file. The sentinels and CorruptError are a frozen contract
+// (docs/PLAN.md): additions only, together with the integrator.
 
 package kvlite
 
