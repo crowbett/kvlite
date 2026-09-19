@@ -1,5 +1,5 @@
 # ADR-0001: kvlite - embedded bitcask-style key-value store (library + CLI)
-Status: Proposed | Date: 2026-09-19 | Module: `github.com/crowbett/kvlite` (Go 1.27)
+Status: Accepted (owner decisions applied, step 1 scaffolded 2026-09-19) | Date: 2026-09-19 | Module: `github.com/crowbett/kvlite` (Go 1.27)
 
 ## Context
 P11 in `~/dev/ROADMAP.md` Queue 2: "append-only log, in-memory keydir, hint files, crash-safe compaction, CRC, TTL, snapshot
@@ -16,7 +16,7 @@ beyond one atomic `Batch`, secondary indexes, replication, network access, value
 
 ## Decision
 Classic bitcask: **writes append to one active segment; every live key sits in an in-memory keydir; a read is one map lookup
-plus one `ReadAt`.** Values are inline in the log (v1: key <= 64 KiB, value <= 64 MiB, both fully in memory - no streaming API),
+plus one `ReadAt`.** Values are inline in the log (v1: key <= 64 KiB, value <= 16 MiB, both fully in memory - no streaming API),
 so a `Get` is exactly one syscall against the page cache. Durability is a knob (`always`/`interval`/`never`) because
 `FlushFileBuffers` on NTFS costs ~1 ms and would dominate every small-value number we publish. Crash safety rests on three
 rules: every record carries a crc32c over a length-prefixed payload; a bad record at the **tail of the active segment** is a
@@ -37,7 +37,8 @@ rolled back.
 ## Package tree
 ```
 cmd/kvlite/main.go     wiring only (template main): NotifyContext -> cli.New -> Register -> Main
-internal/cli/          template subcommand framework, unchanged; commands.go wires kvcli
+internal/cli/          template subcommand framework, unchanged (its template commands.go is gone: kvcli imports cli,
+                       so cli cannot import kvcli - cmd/kvlite registers kvcli.Commands() directly)
 internal/kvcli/        get/put/del/scan/stats/compact/verify/bench implementations (all I/O through cli.Env)
 db.go options.go errors.go stats.go batch.go  package kvlite: public API, writer path, TTL
 open.go recovery.go snapshot.go compact.go    package kvlite: Open/recover, Snapshot, Compact
@@ -49,8 +50,9 @@ internal/fslock/       LOCK file: lock_windows.go (CreateFile share=0) / lock_un
 internal/bench/        kvlite-only Go benchmarks (perf-lab style), zero deps, root module
 bench/ + bench/cmd/kvbench/   NESTED MODULE (own go.mod): kv Store iface + kvlite/bbolt/pebble adapters + runner
 ```
-Imports flow one way: `kvlite -> {record, segment, keydir, manifest, fslock}`, `segment -> record`, `keydir`/`manifest` import
-nothing, `kvcli -> {kvlite, cli}`. No cycles, no `util`/`common`, no `pkg/` (the only public surface is the root package). Root
+Imports flow one way: `kvlite -> {record, segment, keydir, manifest, fslock}`, `segment -> record`, `keydir`/`manifest`/`fslock`
+import nothing, `kvcli -> {kvlite, cli, internal/bench}`, `cmd/kvlite -> {cli, kvcli}`. No cycles, no `util`/`common`, no `pkg/`
+(the only public surface is the root package). Root
 `go.mod` stays dependency-free; `bench/go.mod` holds bbolt + pebble behind `replace github.com/.../kvlite => ../`.
 
 ## On-disk format
@@ -64,7 +66,7 @@ unambiguous; crc32c is Castagnoli (SSE4.2 here) over the payload only.
 | crc32c / plen | LE uint32 x2 | 8 | crc over payload; `plen > maxRecord` = corrupt |
 | flags | u8 | 1 | b0 tombstone, b1 hasExpiry, b2 batchMember, b3 batchCommit |
 | tsMillis / expiryMillis | uvarint | 1-18 | write time (merge tie-break); expiry present only when b1 |
-| keyLen / valLen | uvarint | 2-8 | <= 65536 / <= 64 MiB (hard cap 1 GiB) |
+| keyLen / valLen | uvarint | 2-8 | <= 64 KiB / <= 16 MiB (hard caps `record.MaxKey`/`record.MaxValue`; owner decision, options only lower them) |
 | key, value | raw | keyLen+valLen | value empty for a tombstone; for batchCommit: uvarint count + uvarint batchID |
 
 Flags precede the variable fields (deviation from the roadmap's field order) so the decoder knows whether `expiryMillis` is
@@ -82,8 +84,9 @@ type DB struct{ /* unexported */ }; type Option func(*options) error
 type SyncPolicy uint8; const (SyncNever SyncPolicy = iota; SyncInterval; SyncAlways) // SyncNever is the default
 func Open(dir string, opts ...Option) (*DB, error)
 // Options: WithMaxSegmentBytes(int64) 256<<20 | WithSync(SyncPolicy) | WithSyncInterval(time.Duration) 1s
-//   WithReadOnly() | WithRepair() | WithAutoCompact(deadRatio float64, minDead int64, every time.Duration) off
-//   WithMaxKeyBytes(int) 64<<10 cap | WithMaxValueBytes(int) 64<<20, cap 1<<30 | WithShards(int) 64, pow2
+//   WithReadOnly() | WithRepair() | WithAutoCompact(deadRatio float64) off by default (owner decision); minDead and the
+//   tick are the constants AutoCompactMinDead = 64<<20 and AutoCompactInterval = 5m, not options
+//   WithMaxKeyBytes(int) 64<<10 cap | WithMaxValueBytes(int) 16<<20 cap (owner decision) | WithShards(int) 64, pow2
 //   WithLogger(*slog.Logger) | WithClock(func() time.Time)  <- the TTL seam every test injects
 func (db *DB) Get(key []byte) ([]byte, error)      // fresh copy; ErrNotFound when absent or expired
 func (db *DB) Has(key []byte) (bool, error)
@@ -116,7 +119,8 @@ func (k *Keydir) Put(key []byte, e Entry) (old Entry, existed bool)  // Delete(k
 func (k *Keydir) CompareAndSwap(key []byte, from, to Entry) bool     // compaction re-point; false = superseded
 func (k *Keydir) Snapshot(prefix []byte, now time.Time) Sorted       // sorted, contiguous, skips expired
 type Sorted struct{ /* keys []byte + offs []uint32 + ents []Entry; Len/Key(i)/Entry(i)/Search(k) via sort.Search */ }
-// internal/record   const (MaxKey = 64<<10; MaxValue = 1<<30; HeaderSize = 8)
+// internal/record   const (MaxKey = 64<<10; MaxValue = 16<<20; HeaderSize = 8; MaxMeta = 31; MaxPayload; MaxRecord)
+//                   + Checksum(payload) uint32, Verify(payload, crc) bool, PutHeader/ParseHeader, MaxEncodedSize (real, step 1)
 type Record struct{ Key, Value []byte; TS, Expiry time.Time; Flags Flags }
 func Append(dst []byte, r Record) ([]byte, error)                // encode into a reusable buffer
 func Decode(payload []byte) (Record, error)                      // no copy; Key/Value alias payload
@@ -198,8 +202,9 @@ No goroutine per read or write: `Get` runs on the caller's goroutine, `Put` take
 for snapshot refcounts to drop -> close every segment handle -> release `LOCK`; snapshots still open after that budget are
 force-closed. `cmd/kvlite` threads the template's `signal.NotifyContext` ctx into `compact`/`scan`, so Ctrl+C exits 130.
 
-## CLI (`internal/kvcli`, wired in `internal/cli/commands.go`)
-`kvlite -dir <path> <cmd>`; `-dir` defaults to `.`; values are raw bytes unless `-hex`/`-base64`; `-` means stdin/stdout.
+## CLI (`internal/kvcli`, registered by `cmd/kvlite/main.go`)
+`kvlite <cmd> -dir <path> ...`; `-dir` is a per-command flag (the template dispatcher has no per-app global flags) defaulting
+to `.`; values are raw bytes unless `-hex`/`-base64`; `-` means stdin/stdout.
 
 | Command | Flags | Behaviour |
 |---|---|---|
@@ -208,7 +213,7 @@ force-closed. `cmd/kvlite` threads the template's `signal.NotifyContext` ctx int
 | `scan [prefix]` | `-lo`, `-hi`, `-limit`, `-keys-only`, `-json` | opens a `Snapshot`, honours ctx |
 | `stats` / `compact` | `-json` / `-timeout` | `Stats` as table or JSON / `Compact(ctx)` + reclaimed bytes and duration |
 | `verify` | `-deep`, `-json` | walks every segment (crc per record), cross-checks each hint against its log, reports orphans; exit 1 on any finding; read-only, never mutates |
-| `bench` | `-n`, `-value`, `-readers`, `-sync`, `-random` | the built-in workload against a temp or given dir |
+| `bench` | `-n`, `-value`, `-readers`, `-sync`, `-random` | the built-in `internal/bench.Run` workload against a temp or given dir; kvlite only (owner decision: the bbolt/pebble comparison is `kvbench` in the nested module, never shelled out to) |
 
 ## Benchmarks
 `internal/bench` (root module, zero deps, perf-lab style): `Put/Get/Delete/Scan` x 100 B / 1 KiB / 16 KiB values x sequential
@@ -238,8 +243,13 @@ through benchstat; the runner's latency table stays a committed markdown table (
   fault-injecting `segment.Writer` fails after k bytes; the DB reopens with the pre-compaction key set and no orphans.
 
 ## Implementation plan
-1. **Integrator - scaffold.** `new-project.ps1`, this file -> `docs/PLAN.md`, `cmd/tool` -> `cmd/kvlite`, repo `CLAUDE.md`,
-   `.bench/` + `scripts/bench.ps1` from perf-lab, stubs carrying every signature above. Verify `go build ./... ; go vet ./...`.
+1. **Integrator - scaffold. DONE 2026-09-19.** `new-project.ps1`, this file -> `docs/PLAN.md`, `cmd/tool` -> `cmd/kvlite`, repo
+   `CLAUDE.md`, `.bench/` + `scripts/bench.ps1` from perf-lab, stubs carrying every signature above (each stub file opens with
+   `// STUB written by the integrator ...; workstream X owns this file`; bodies return `errors.New("stub: <pkg>.<Func>")`).
+   Real already: sentinels + `CorruptError`, the `Option` set, `record` constants/`Checksum`/`Verify`/header helpers +
+   `FuzzRecord` seeds, `keydir.Entry` (+ 16-byte test) and `Sorted`, `manifest.Encode/Decode`, all of `fslock`, the `kvcli`
+   flag sets, the `bench.Store` seam and the kvlite adapter. Verify `go build ./... ; go vet ./... ; go test -race ./... ;
+   golangci-lint run ./... ; (cd bench; go build ./...)`.
 2. **WS-A `internal/record`, `internal/fslock`, `internal/manifest`.** Encode/decode + crc32c + varints + limits; build-tagged
    lock; MANIFEST atomic swap; `TestLockedTwice` (second `Open` -> `ErrLocked`). Verify `go test ./internal/record/ -run . -fuzz
    FuzzRecord -fuzztime 60s` ; `go test ./internal/fslock/ ./internal/manifest/ -race`.
@@ -311,9 +321,18 @@ key-log/value-log split for large values, `io.Reader` streaming values, per-segm
   MANIFEST swap and only for segments immutable at that point, a hint for the active segment is ignored, and `kvlite verify`
   cross-checks every hint entry against the log it describes.
 
-## Open questions for the owner
-1. Should `Get` return a copy (safe, one alloc per read) or a view into a pooled buffer with explicit release (fast, easy to
-   misuse)? Assumed: copy, with `GetInto(dst []byte)` as a P16 addition.
-2. Is a 64 MiB default value cap right, or should v1 refuse anything over ~16 MiB to keep CLI GC pressure predictable?
-3. Auto-compaction on by default (`deadRatio 0.5`, `minDead 64 MiB`, every 5 min), or strictly opt-in as drafted? And should
-   `kvlite bench` shell out to the nested `kvbench` module when present, or stay kvlite-only?
+## Open questions for the owner - DECIDED 2026-09-19
+1. **`Get` returns a fresh copy** (safe, one alloc per read). A pooled view / `GetInto(dst []byte)` is a P16 addition.
+   Applied: `DB.Get`, `Snapshot.Get` and `Iter.Value` are documented as returning a copy.
+2. **Value cap is 16 MiB** (`record.MaxValue = 16<<20`, `kvlite.MaxValueBytes`); `WithMaxValueBytes` can only lower it. The
+   64 MiB / 1 GiB figures elsewhere in earlier drafts are superseded.
+3. **Auto-compaction is OFF by default**, opt-in with `WithAutoCompact(deadRatio float64)`; `minDead` (64 MiB) and the tick
+   (5 min) are the exported constants `AutoCompactMinDead` / `AutoCompactInterval`, not options. **`kvlite bench` runs only
+   the dependency-free `internal/bench` workload**; the bbolt/pebble comparison is `kvbench` in the nested `bench/` module.
+
+Scaffold deviations (integrator, step 1): `internal/cli/commands.go` is removed and `cmd/kvlite/main.go` registers
+`kvcli.Commands()` because `kvcli -> cli` plus `cli -> kvcli` would be an import cycle; `-dir` is a per-command flag rather
+than a global one; `record.MaxMeta` is the exact 31-byte worst case instead of the loose 16; `segment.Reader` gains
+`ID()`/`Refs()`/`Close()` and `segment.Writer` gains `ID()`; `segment.HintEntry` carries `Key`; `keydir.Keydir` gains
+`Bytes()` (backs `Stats.KeydirBytes`); `manifest` exposes `Encode/Decode/Load/Save/Orphans` + `Manifest{Gen, Active,
+NextID, Segments}` and the `trash` dir name; `fslock` is `Acquire(path) (*Lock, error)` / `Lock.Release()` / `ErrLocked`.

@@ -1,55 +1,27 @@
 # kvlite
 
-Dependency-free Go CLI skeleton: `flag` + a tiny subcommand dispatcher. No cobra.
-
-```
-cmd/kvlite/main.go        entrypoint, signal handling, version from ldflags or build info
-internal/cli/cli.go     App / Command / Env: global flags, dispatch, usage, exit codes
-internal/cli/commands.go  your subcommands (greet, echo as examples)
-internal/cli/cli_test.go  table-driven tests through App.Run
-.goreleaser.yaml        v2 config: linux/windows/darwin x amd64/arm64, archives, checksums, changelog
-Taskfile.yml            task build|install|run|test|lint|release:snapshot
-```
-
-## Usage
-
-```powershell
-go run ./cmd/kvlite greet -name neon -shout
-go run ./cmd/kvlite -v echo hello world
-go run ./cmd/kvlite -version
-go run ./cmd/kvlite help
-```
-
-Exit codes: `0` ok, `1` runtime error, `2` usage error, `130` interrupted.
-
-## Add a subcommand
-
-In `internal/cli/commands.go`:
+Embedded bitcask-style key-value store for Go: append-only segments, in-memory keydir, hint files,
+crc32c on every record, TTL, atomic batches, sorted snapshots and crash-safe compaction. Zero dependencies.
+**Status: scaffold - the API is frozen, the bodies are stubs** (see `docs/PLAN.md`, ADR-0001).
 
 ```go
-func fooCommand() *Command {
-    var n int
-    return &Command{
-        Name:    "foo",
-        Summary: "does foo",
-        Flags:   func(fs *flag.FlagSet) { fs.IntVar(&n, "n", 1, "how many") },
-        Run: func(ctx context.Context, env *Env, args []string) error {
-            _, err := fmt.Fprintln(env.Stdout, "foo", n, args)
-            return err
-        },
-    }
-}
+db, err := kvlite.Open("./data", kvlite.WithSync(kvlite.SyncInterval))
+defer db.Close()
+_ = db.Put([]byte("k"), []byte("v"))
+v, err := db.Get([]byte("k"))                 // fresh copy; kvlite.ErrNotFound when absent/expired
+_ = db.PutTTL([]byte("session"), v, time.Hour)
+_ = db.Batch().Put([]byte("a"), v).Delete([]byte("k")).Commit()
+snap, _ := db.Snapshot(); defer snap.Close()
+for it := snap.Iter([]byte("prefix")); it.Next(); { _, _ = it.Key(), it.Value }
+_ = db.Compact(ctx)
 ```
 
-then append it to `Commands()`.
-
-## Release
+## CLI
 
 ```powershell
-go install github.com/goreleaser/goreleaser/v2@latest
-goreleaser check
-goreleaser release --snapshot --clean   # local dist/ build for all targets
-git tag v0.1.0; git push --tags          # CI/goreleaser release from a tag
+go run ./cmd/kvlite put -dir ./data k v ; go run ./cmd/kvlite get -dir ./data k
+go run ./cmd/kvlite scan -dir ./data -json ; go run ./cmd/kvlite stats -dir ./data
+go run ./cmd/kvlite compact|verify|bench -dir ./data
 ```
-
-Commit messages in Conventional Commits style (`feat:`, `fix:`, `perf:`) are grouped in the changelog.
+Exit codes: `0` ok, `1` error (incl. key not found / verify findings), `2` usage, `130` interrupted.
+`task fuzz` fuzzes the record format; `task compare` (nested `bench/` module) runs kvlite vs bbolt vs pebble.

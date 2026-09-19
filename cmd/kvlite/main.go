@@ -1,4 +1,5 @@
-// Command tool is a minimal subcommand CLI built on the standard flag package.
+// Command kvlite is the CLI for the kvlite embedded key-value store: get/put/del/scan/stats/compact/
+// verify/bench against a store directory. Wiring only; the commands live in internal/kvcli.
 package main
 
 import (
@@ -9,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/crowbett/kvlite/internal/cli"
+	"github.com/crowbett/kvlite/internal/kvcli"
 )
 
 // Set by goreleaser via -ldflags. Falls back to module build info for `go install`.
@@ -19,12 +21,17 @@ var (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run is main without os.Exit so the signal handler's stop() runs before the process exits.
+func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	app := cli.New("tool", buildVersion())
-	app.Register(cli.Commands()...)
-	os.Exit(app.Main(ctx, os.Args[1:]))
+	app := cli.New("kvlite", buildVersion())
+	app.Register(kvcli.Commands()...)
+	return app.Main(ctx, os.Args[1:])
 }
 
 func buildVersion() string {

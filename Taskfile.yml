@@ -1,7 +1,7 @@
 version: "3"
 
 vars:
-  APP: tool
+  APP: kvlite
   MAIN: ./cmd/kvlite
   BIN: bin/{{.APP}}{{exeExt}}
   VERSION:
@@ -16,9 +16,14 @@ tasks:
       - task --list
 
   tidy:
+    desc: go mod tidy + verify for the root and the nested bench module
     cmds:
       - go mod tidy
       - go mod verify
+      - cmd: go mod tidy
+        dir: bench
+      - cmd: go mod verify
+        dir: bench
 
   build:
     desc: Build into bin/
@@ -33,7 +38,7 @@ tasks:
       - go install -trimpath -ldflags="-s -w -X main.version={{.VERSION}}" {{.MAIN}}
 
   run:
-    desc: go run with args  (task run -- greet -name neon)
+    desc: go run with args  (task run -- stats -dir ./data)
     cmds:
       - go run {{.MAIN}} {{.CLI_ARGS}}
 
@@ -59,12 +64,33 @@ tasks:
     cmds:
       - golangci-lint fmt ./...
 
+  fuzz:
+    desc: Fuzz the record format for 30s (FuzzRecord); FuzzDB is run by hand with -fuzztime 120s
+    cmds:
+      - go test ./internal/record/ -run '^$' -fuzz '^FuzzRecord$' -fuzztime 30s
+
+  bench:
+    desc: kvlite-only Go benchmarks (placeholder until WS-D lands; use scripts/bench.ps1 for baselines)
+    cmds:
+      - go test -run '^$' -bench . -benchmem ./internal/bench/...
+
+  compare:
+    desc: Cross-engine benchmarks (kvlite vs bbolt vs pebble) in the nested bench/ module
+    dir: bench
+    cmds:
+      - go test -run '^$' -bench . -benchmem ./...
+
   check:
+    desc: tidy + vet + lint + test (+ the nested module's build/vet)
     deps: [tidy]
     cmds:
       - task: vet
       - task: lint
       - task: test
+      - cmd: go build ./...
+        dir: bench
+      - cmd: go vet ./...
+        dir: bench
 
   release:check:
     desc: Validate .goreleaser.yaml
@@ -78,4 +104,4 @@ tasks:
 
   clean:
     cmds:
-      - '{{if eq OS "windows"}}powershell -NoProfile -Command "Remove-Item -Recurse -Force bin, dist -ErrorAction SilentlyContinue"{{else}}rm -rf bin dist{{end}}'
+      - '{{if eq OS "windows"}}powershell -NoProfile -Command "Remove-Item -Recurse -Force bin, dist, results -ErrorAction SilentlyContinue"{{else}}rm -rf bin dist results{{end}}'

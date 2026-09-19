@@ -1,6 +1,6 @@
 ---
 name: add-command
-description: "Add a subcommand to THIS repo's flag-based dispatcher: xxxCommand() constructor in internal/cli/commands.go, registration in Commands(), table rows in TestCommands (cli_test.go), README usage line, then build/vet/test. Use when the user says 'add a command', 'new subcommand', 'add a <verb> command', or 'wire up <name>'."
+description: "Add a subcommand to THIS repo's flag-based dispatcher: xxxCommand() constructor in internal/kvcli/commands.go, registration in Commands(), table rows in TestCommands (internal/kvcli/commands_test.go), README usage line, then build/vet/test. Use when the user says 'add a command', 'new subcommand', 'add a <verb> command', or 'wire up <name>'."
 argument-hint: "<name> [\"summary\"] [-flag:type=default ...]"
 arguments: [name, summary]
 shell: powershell
@@ -12,28 +12,28 @@ allowed-tools: PowerShell(go build *) PowerShell(go vet *) PowerShell(go test *)
 Command: `$name`  Summary: `$summary`  Raw: `$ARGUMENTS`
 
 ## Current commands
-!`Select-String -Path internal\cli\commands.go -Pattern 'Name:\s+"'; Write-Output 'test table rows:'; Select-String -Path internal\cli\cli_test.go -Pattern '^\s*\{"' | Measure-Object | Select-Object -ExpandProperty Count; Get-ChildItem cmd -Directory -Name; go version`
+!`Select-String -Path internalkvclimmands.go -Pattern 'Name:\s+"'; Write-Output 'test table rows:'; Select-String -Path internalkvclimmands_test.go -Pattern '^\s*\{"' | Measure-Object | Select-Object -ExpandProperty Count; Get-ChildItem cmd -Directory -Name; go version`
 
 ## Files (do not invent others)
 | What | Where |
 |---|---|
-| `func <name>Command() *Command` | `internal/cli/commands.go` |
-| registration | `Commands()` slice in `internal/cli/commands.go` |
-| test rows | `TestCommands` table in `internal/cli/cli_test.go` |
+| `func <name>Command() *cli.Command` | `internal/kvcli/commands.go` |
+| registration | `Commands()` slice in `internal/kvcli/commands.go` |
+| test rows | `TestCommands` table in `internal/kvcli/commands_test.go` |
 | usage docs | `README.md` "Usage" block |
 
 ## Procedure
-1. Read `internal/cli/commands.go` (see `greetCommand`) and `cli_test.go` (`run` helper) before writing.
-2. **Constructor** in `commands.go`, in the same shape as `greetCommand`:
+1. Read `internal/kvcli/commands.go` (see `getCommand`) and `commands_test.go` (`run` helper) before writing; every command takes `-dir` via `common.dirFlag`.
+2. **Constructor** in `commands.go`, in the same shape as `getCommand`:
    ```go
-   func <name>Command() *Command {
+   func <name>Command() *cli.Command {
        var n int
-       return &Command{
+       return &cli.Command{
            Name:    "<name>",
            Summary: "<one line, lower case, no trailing period>",
            Flags:   func(fs *flag.FlagSet) { fs.IntVar(&n, "n", 1, "how many") },
-           Run: func(ctx context.Context, env *Env, args []string) error {
-               // validate args -> return fmt.Errorf("%w: <name> needs ...", ErrUsage)
+           Run: func(ctx context.Context, env *cli.Env, args []string) error {
+               // validate args -> return fmt.Errorf("%w: <name> needs ...", cli.ErrUsage)
                // do work honouring ctx; write results to env.Stdout, diagnostics via env.Logf
                _, err := fmt.Fprintln(env.Stdout, ...)
                return err
@@ -45,7 +45,7 @@ Command: `$name`  Summary: `$summary`  Raw: `$ARGUMENTS`
    anything blocking selects on `ctx.Done()`; real logic that grows past ~40 lines moves to
    `internal/<domain>` and the command just calls it.
 3. **Register**: append `<name>Command(),` to the slice in `Commands()` (keep alphabetical-ish order).
-4. **Tests**: add rows to `TestCommands`: default behaviour, each flag, a usage error (`wantErr: ErrUsage`).
+4. **Tests**: add rows to `TestCommands`: default behaviour, each flag, a usage error (`wantErr: cli.ErrUsage`).
    Output assertions use `wantOut` prefix matching; if the command reads stdin, extend the `run` helper's
    `Env.Stdin` rather than adding a new helper.
 5. **README**: add a `go run ./cmd/<bin> <name> ...` example under "Usage".

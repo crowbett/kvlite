@@ -90,7 +90,7 @@ func (a *App) Run(ctx context.Context, env *Env, args []string) error {
 		if errors.Is(err, flag.ErrHelp) {
 			return ErrUsage
 		}
-		return fmt.Errorf("%w: %v", ErrUsage, err)
+		return fmt.Errorf("%w: %w", ErrUsage, err)
 	}
 	if *showVersion {
 		fmt.Fprintf(env.Stdout, "%s %s\n", a.Name, a.Version)
@@ -128,7 +128,7 @@ func (a *App) Run(ctx context.Context, env *Env, args []string) error {
 		if errors.Is(err, flag.ErrHelp) {
 			return ErrUsage
 		}
-		return fmt.Errorf("%w: %v", ErrUsage, err)
+		return fmt.Errorf("%w: %w", ErrUsage, err)
 	}
 	return cmd.Run(ctx, env, fs.Args())
 }
