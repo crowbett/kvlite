@@ -65,9 +65,14 @@ tasks:
       - golangci-lint fmt ./...
 
   fuzz:
-    desc: Fuzz the record format for 30s (FuzzRecord); FuzzDB is run by hand with -fuzztime 120s
+    desc: Fuzz every parser for 30s each (record, segment scan, hint, names, manifest, commit marker); FuzzDB is run by hand with -fuzztime 120s
     cmds:
       - go test ./internal/record/ -run '^$' -fuzz '^FuzzRecord$' -fuzztime 30s
+      - go test ./internal/segment/ -run '^$' -fuzz '^FuzzSegmentScan$' -fuzztime 30s
+      - go test ./internal/segment/ -run '^$' -fuzz '^FuzzHint$' -fuzztime 30s
+      - go test ./internal/segment/ -run '^$' -fuzz '^FuzzParseName$' -fuzztime 30s
+      - go test ./internal/manifest/ -run '^$' -fuzz '^FuzzManifest$' -fuzztime 30s
+      - go test . -run '^$' -fuzz '^FuzzCommitMarker$' -fuzztime 30s
 
   bench:
     desc: kvlite-only Go benchmarks, one unsaved pass (baselines go through scripts/bench.ps1 -Save baseline)

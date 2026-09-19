@@ -76,7 +76,7 @@ jobs:
         run: go run ./cmd/kvbench -n 2000 -sizes 100 -engines kvlite,bbolt,pebble
 
   fuzz-smoke:
-    name: fuzz smoke (FuzzRecord + FuzzDB, 20 s each)
+    name: fuzz smoke (every Fuzz* target, 20 s each)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +86,21 @@ jobs:
       - name: FuzzRecord
         shell: bash
         run: go test -run '^$' -fuzz='^FuzzRecord$' -fuzztime=20s ./internal/record/
+      - name: FuzzSegmentScan
+        shell: bash
+        run: go test -run '^$' -fuzz='^FuzzSegmentScan$' -fuzztime=20s ./internal/segment/
+      - name: FuzzHint
+        shell: bash
+        run: go test -run '^$' -fuzz='^FuzzHint$' -fuzztime=20s ./internal/segment/
+      - name: FuzzParseName
+        shell: bash
+        run: go test -run '^$' -fuzz='^FuzzParseName$' -fuzztime=20s ./internal/segment/
+      - name: FuzzManifest
+        shell: bash
+        run: go test -run '^$' -fuzz='^FuzzManifest$' -fuzztime=20s ./internal/manifest/
+      - name: FuzzCommitMarker
+        shell: bash
+        run: go test -run '^$' -fuzz='^FuzzCommitMarker$' -fuzztime=20s .
       - name: FuzzDB
         shell: bash
         run: go test -run '^$' -fuzz='^FuzzDB$' -fuzztime=20s .

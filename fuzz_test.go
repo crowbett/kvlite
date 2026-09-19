@@ -3,8 +3,10 @@ package kvlite
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -444,4 +446,30 @@ func seedScripts() [][]byte {
 		{9, 1, 'x', 9, 2, 'y', 9, 3, 'z', 9, 4, 'w', 7, 6, 0, 8, 1, 6, 0, 9, 1, 'q', 7, 6, 0},
 		{2, 1, 4, 'a', 15, 2, 2, 4, 'b', 0, 8, 0, 0, 6, 0, 8, 0, 15, 6, 0, 7, 6, 0, 8, 1, 6, 0},
 	}
+}
+
+// FuzzCommitMarker pins the commit-marker decoder recovery runs on every FlagBatchCommit value:
+// arbitrary bytes never panic and never yield a count above MaxInt32, and every marker the writer
+// encodes (uvarint count + uvarint batchID) decodes to its count.
+func FuzzCommitMarker(f *testing.F) {
+	f.Add([]byte{}, uint32(0), uint64(0))
+	f.Add([]byte{1, 42}, uint32(1), uint64(42))
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0}, uint32(100), uint64(1<<63))
+	f.Add([]byte{0x80}, uint32(math.MaxInt32), uint64(7))
+	f.Fuzz(func(t *testing.T, raw []byte, count uint32, id uint64) {
+		if n, ok := decodeCommit(raw); ok && (n < 0 || n > math.MaxInt32) {
+			t.Fatalf("decodeCommit(% x) = %d, outside [0, MaxInt32]", raw, n)
+		}
+		enc := binary.AppendUvarint(binary.AppendUvarint(nil, uint64(count)), id)
+		n, ok := decodeCommit(enc)
+		if count > math.MaxInt32 {
+			if ok {
+				t.Fatalf("decodeCommit accepted count %d", count)
+			}
+			return
+		}
+		if !ok || n != int(count) {
+			t.Fatalf("decodeCommit(count=%d, id=%d) = %d, %v", count, id, n, ok)
+		}
+	})
 }
