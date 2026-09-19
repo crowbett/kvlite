@@ -1,10 +1,9 @@
-// STUB written by the integrator to freeze the contract; workstream D (cli + bench + fuzz) owns this file
-// and replaces the bodies, keeping every exported signature. The kvlite adapter is pure delegation and
-// works as soon as the root package does.
-
 package bench
 
 import (
+	"context"
+	"errors"
+
 	"github.com/crowbett/kvlite"
 )
 
@@ -21,10 +20,18 @@ func OpenKVLite(dir string) (Store, error) {
 	return &kvliteStore{db: db}, nil
 }
 
-func (s *kvliteStore) Get(key []byte) ([]byte, error) { return s.db.Get(key) }
-func (s *kvliteStore) Put(key, value []byte) error    { return s.db.Put(key, value) }
-func (s *kvliteStore) Delete(key []byte) error        { return s.db.Delete(key) }
-func (s *kvliteStore) Close() error                   { return s.db.Close() }
+func (s *kvliteStore) Get(key []byte) ([]byte, error) {
+	v, err := s.db.Get(key)
+	if errors.Is(err, kvlite.ErrNotFound) {
+		return nil, ErrNotFound
+	}
+	return v, err
+}
+
+func (s *kvliteStore) Put(key, value []byte) error       { return s.db.Put(key, value) }
+func (s *kvliteStore) Delete(key []byte) error           { return s.db.Delete(key) }
+func (s *kvliteStore) Close() error                      { return s.db.Close() }
+func (s *kvliteStore) Compact(ctx context.Context) error { return s.db.Compact(ctx) }
 
 func (s *kvliteStore) Scan(prefix []byte, fn func(k, v []byte) bool) error {
 	snap, err := s.db.Snapshot()
