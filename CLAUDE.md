@@ -39,8 +39,8 @@ Imports flow one way: `kvlite -> {record, segment, keydir, manifest, fslock}`, `
 
 ## Frozen contracts (change only together with docs/PLAN.md, by the integrator)
 `keydir.Entry` (16 bytes, no pointers), `record.Record` + the byte layout and constants, `segment.Writer`/
-`Reader`, `kvlite.Stats`, the `Option` set and every sentinel in `errors.go`. Every stub file starts with
-`// STUB written by the integrator ...; workstream X owns this file` - replace bodies, keep signatures.
+`Reader`, `kvlite.Stats`, the `Option` set and every sentinel in `errors.go`. All lanes have landed (no
+`stub:` bodies remain); the per-lane deviations from the ADR are listed at the end of `docs/PLAN.md`.
 
 ## Per-file ownership (fanout)
 - **WS-A format**: `internal/record/**`, `internal/segment/**`, `internal/manifest/**`, `internal/fslock/**`.
@@ -62,12 +62,24 @@ Imports flow one way: `kvlite -> {record, segment, keydir, manifest, fslock}`, `
   `perf(bench): refresh baseline` commit; unsaved runs go to gitignored `results/bench/`.
 - `bench/` is a separate module: `cd bench` before `go build`/`go test`; root `go build ./...` must never
   pull bbolt or pebble.
+- **Every number in README.md comes from `scripts/bench.ps1` (the `.bench/baseline.txt` it writes) or from
+  `kvbench` (`.bench/compare-<date>*.txt`).** Never type a figure by hand: rerun the tool on a quiet box,
+  commit its output file, then copy rows from that file. The README names the machine and the sync policy
+  next to every table; a change to the workload or the machine means a fresh baseline commit.
 - Commit messages are Conventional Commits (hookify enforces).
 
 ## Commands (Taskfile.yml)
 `task build|install|run -- <args>`, `task test`, `task test:race`, `task vet`, `task lint`, `task fmt`,
-`task fuzz` (FuzzRecord 30 s), `task bench` (internal/bench), `task compare` (bench/ module, all engines),
-`task check`, `task release:check`, `task release:snapshot`.
+`task fuzz` (FuzzRecord 30 s), `task bench` (internal/bench, unsaved), `task compare` (bench/ module, all
+engines, go-test form), `task kvbench -- -n 200000 -sizes 100,1024` (runner table), `task check`,
+`task release:check`, `task release:snapshot`.
+Baselines: `pwsh -NoProfile -File scripts/bench.ps1 -Pkg ./internal/bench/... -Save baseline -Count 10`
+(commit alone as `perf(bench): refresh baseline`); compare a change with `scripts/bench.ps1 -Compare baseline`.
+Cross-engine table: `cd bench; go run ./cmd/kvbench -n 200000 -sizes 100,1024 -out ../.bench/compare-<date>.txt`.
+Long fuzz: `go test -run '^$' -fuzz='^FuzzDB$' -fuzztime=120s .` (keep any new `testdata/fuzz/FuzzDB` entry).
+CI (`.github/workflows/ci.yml`): test on ubuntu + windows (`-race`), lint (golangci-lint v2), bench module
+build/vet/test + a 2k-key kvbench smoke, 20 s fuzz smoke of both fuzzers, `goreleaser check` (snapshot build
+on `v*` tags).
 
 ## Definition of done
 `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...`, `golangci-lint run ./...` (0 issues),

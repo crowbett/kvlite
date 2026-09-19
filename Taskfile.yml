@@ -70,15 +70,21 @@ tasks:
       - go test ./internal/record/ -run '^$' -fuzz '^FuzzRecord$' -fuzztime 30s
 
   bench:
-    desc: kvlite-only Go benchmarks (placeholder until WS-D lands; use scripts/bench.ps1 for baselines)
+    desc: kvlite-only Go benchmarks, one unsaved pass (baselines go through scripts/bench.ps1 -Save baseline)
     cmds:
       - go test -run '^$' -bench . -benchmem ./internal/bench/...
 
   compare:
-    desc: Cross-engine benchmarks (kvlite vs bbolt vs pebble) in the nested bench/ module
+    desc: Cross-engine go-test benchmarks (kvlite vs bbolt vs pebble) in the nested bench/ module
     dir: bench
     cmds:
       - go test -run '^$' -bench . -benchmem ./...
+
+  kvbench:
+    desc: Cross-engine runner table  (task kvbench -- -n 200000 -sizes 100,1024 -out ../.bench/compare-<date>.txt)
+    dir: bench
+    cmds:
+      - go run ./cmd/kvbench {{.CLI_ARGS}}
 
   check:
     desc: tidy + vet + lint + test (+ the nested module's build/vet)

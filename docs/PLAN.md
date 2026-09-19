@@ -336,3 +336,27 @@ than a global one; `record.MaxMeta` is the exact 31-byte worst case instead of t
 `ID()`/`Refs()`/`Close()` and `segment.Writer` gains `ID()`; `segment.HintEntry` carries `Key`; `keydir.Keydir` gains
 `Bytes()` (backs `Stats.KeydirBytes`); `manifest` exposes `Encode/Decode/Load/Save/Orphans` + `Manifest{Gen, Active,
 NextID, Segments}` and the `trash` dir name; `fslock` is `Acquire(path) (*Lock, error)` / `Lock.Release()` / `ErrLocked`.
+
+Lane deviations (steps 2-10, recorded at close-out, 2026-09-19; all committed and green):
+- **WS-A** `record` gained `Parse(b) (Record, n, error)` (decode one complete record from the front of a byte
+  slice, telling truncated / too-large / checksum / malformed apart for the segment scanner) and `EncodedSize(r)`
+  (exact on-disk size, used by the batch fit check);
+  timestamps encode as the uvarint of the two's-complement millisecond value so every `time.Time` round-trips
+  exactly; `segment.Reader` gained `ReadAtBuf`, `ScanFrom`, `Resync` and `Size`, `Writer` gained `Open` (reopen
+  for append) and `Truncate`; the segment `ScanError{Tail bool}` tells a torn tail from mid-file corruption.
+- **WS-B** the keydir applies a batch through one `Apply([]Update)` (all shards locked in order) so readers see
+  all of a batch or none; `Stats.Repairs` was appended (WithRepair skip count). Measured keydir cost: 116 B/key
+  at 1M x 16 B keys (`TestBytesAtScale`), under the 130 B budget.
+- **WS-C** compaction reserves its output ids **before** rotating the active segment, so outputs sort below
+  the new active segment and recovery's "ascending id = ascending write time" rule needs no per-record
+  timestamp compare; a record that is **expired at load time is applied as a delete**, not skipped (skipping
+  would let an older non-expiring value from an earlier segment resurrect); the five compaction stages
+  (`rotated`/`merged`/`adopted`/`swapped`/`released`) are a test hook, each crash-tested.
+- **WS-D** a batch has **no begin marker**: members carry `FlagBatchMember` and the trailing `FlagBatchCommit`
+  marker holds `(count, batchID)`, so recovery buffers members until a marker with a matching count lands and
+  drops the group otherwise; `kvbench`'s runner imports `internal/bench` (keys, values, `HiResNow`, percentiles,
+  `DirSize`) so the kvlite-only and cross-engine numbers come from the same code - allowed because `bench/` is
+  a nested module of the same repository path; `internal/bench` uses a QPC-based `HiResNow` on Windows because
+  `time.Now`'s monotonic source steps at 0.5-15 ms there.
+- **Integrator** the kvlite-only baseline is 200k keys on `Open` (not the ADR's 1M) so a `-count 10` run fits
+  the `.bench/README.md` budget; `task fuzz` runs FuzzRecord 30 s, CI runs both fuzzers 20 s.
