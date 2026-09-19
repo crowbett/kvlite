@@ -65,7 +65,7 @@ func appendHintEntry(dst, key []byte, e HintEntry) []byte {
 func WriteHint(dir string, id uint32, it func(yield func(key []byte, e HintEntry) bool)) error {
 	path := filepath.Join(dir, HintName(id))
 	tmp := path + TempSuffix
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644) //nolint:gosec // hint file
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, FileMode) //nolint:gosec // hint file
 	if err != nil {
 		return fmt.Errorf("segment: write hint %s: %w", path, err)
 	}

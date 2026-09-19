@@ -45,6 +45,10 @@ const (
 	ScanBufferSize = 1 << 20
 	// MaxSize is the largest a segment file can grow: offsets are uint32.
 	MaxSize = math.MaxUint32
+	// FileMode is the permission every store file (segment, hint, MANIFEST) is created with: the
+	// files hold user data, so they are owner-only (0600) rather than world-readable. Ignored on
+	// Windows, which has no mode bits.
+	FileMode = 0o600
 )
 
 // Sentinel errors. Record-level errors (record.ErrChecksum, ...) pass through unchanged.
@@ -163,7 +167,7 @@ type Writer struct {
 // after it. It fails if the file already exists.
 func Create(dir string, id uint32) (*Writer, error) {
 	path := filepath.Join(dir, LogName(id))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o644) //nolint:gosec // segment file
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, FileMode) //nolint:gosec // segment file
 	if err != nil {
 		return nil, fmt.Errorf("segment: create %s: %w", path, err)
 	}
@@ -186,7 +190,7 @@ func Create(dir string, id uint32) (*Writer, error) {
 // Truncate at the ScanError offset.
 func Open(dir string, id uint32) (*Writer, error) {
 	path := filepath.Join(dir, LogName(id))
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644) //nolint:gosec // segment file
+	f, err := os.OpenFile(path, os.O_RDWR, FileMode) //nolint:gosec // segment file
 	if err != nil {
 		return nil, fmt.Errorf("segment: open %s: %w", path, err)
 	}

@@ -34,6 +34,9 @@ const (
 	Version = 1
 	// fixedSize is the encoded size without segment ids: magic 4 + ver 1 + gen 8 + active 4 + next 4 + count 4 + crc 4.
 	fixedSize = 4 + 1 + 8 + 4 + 4 + 4 + 4
+	// FileMode is the permission MANIFEST is created with: owner-only, like every other store file
+	// (segment.FileMode; this package imports nothing so the constant is repeated). No-op on Windows.
+	FileMode = 0o600
 )
 
 // Sentinel errors.
@@ -148,7 +151,7 @@ func Save(dir string, m *Manifest) error {
 	}
 	path := filepath.Join(dir, FileName)
 	tmp := filepath.Join(dir, TempName)
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644) //nolint:gosec // the store's MANIFEST
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, FileMode) //nolint:gosec // the store's MANIFEST
 	if err != nil {
 		return fmt.Errorf("manifest: save %s: %w", path, err)
 	}
