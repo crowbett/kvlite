@@ -1,11 +1,14 @@
-// STUB written by the integrator to freeze the contract; workstream A (format) owns this file and replaces
-// the bodies, keeping every exported signature. This package is real and tested (see lock_*.go for the
-// per-platform primitive); WS-A may harden it but must keep Acquire/Release/ErrLocked.
-
 // Package fslock implements the single-writer LOCK file of a kvlite directory. The lock is held by an
 // open file handle, so the OS releases it when the process dies: an exclusive share mode on Windows
 // (CreateFile with dwShareMode 0), flock(LOCK_EX|LOCK_NB) on unix, and O_EXCL creation elsewhere.
-// The file holds the owner's pid for diagnostics only. It imports nothing from the rest of the module.
+// It imports nothing from the rest of the module.
+//
+// Stale locks: the file holds the owner's pid for diagnostics only. On Windows and unix a LOCK left
+// behind by a crashed process is not held by anyone (the handle died with the process) and the next
+// Acquire simply takes it over, rewriting the pid; nothing ever needs to be removed by hand. Only the
+// O_EXCL fallback (platforms with neither primitive) treats the file's existence as the lock, so a
+// crash there leaves ErrLocked until the file is deleted. Contention is never a wait: Acquire returns
+// ErrLocked immediately, whether the holder is another process or another Lock in this one.
 package fslock
 
 import (

@@ -1,13 +1,23 @@
-// STUB written by the integrator to freeze the contract; workstream A (format) owns this file and replaces
-// the bodies, keeping every exported signature. Constants, flags, Checksum/Verify and the header helpers
-// are real and tested; Append/Decode/Read are stubs.
-
 // Package record encodes and decodes the on-disk log record of a kvlite segment.
 //
 // Record = [crc32c:4][plen:uint32][payload:plen], little-endian. The crc is Castagnoli over the payload
 // only. Payload = [flags:1][tsMillis:uvarint][expiryMillis:uvarint, only when FlagExpiry][keyLen:uvarint]
 // [valLen:uvarint][key][value]. Flags precede the variable fields so the decoder knows whether the expiry
 // is present and can skip a tombstone body in one pass. See docs/PLAN.md "On-disk format".
+//
+// Timestamps are encoded as the uvarint of the two's-complement int64 millisecond value, so every
+// time.Time round-trips exactly (a zero time.Time costs 10 bytes; the engine always sets TS).
+//
+// Error taxonomy, matched with errors.Is:
+//   - ErrTruncated: the input ends inside the record (a torn write at the tail of a segment).
+//   - ErrTooLarge: a key, value or plen exceeds its limit (a corrupt header, or a caller bug in Append).
+//   - ErrChecksum: the header crc does not match the payload.
+//   - ErrMalformed: the payload is self-inconsistent (unknown flag bit, bad or non-minimal varint,
+//     lengths that do not add up to plen). The encoding is canonical: a payload that decodes re-encodes
+//     to the identical bytes.
+//
+// Only Read and Parse can return ErrTruncated or ErrChecksum; Decode sees a payload of known length and
+// reports ErrMalformed for a short one.
 package record
 
 import (
@@ -15,6 +25,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"math"
 	"time"
 )
 
@@ -97,6 +108,30 @@ type Record struct {
 	Flags  Flags
 }
 
+// ExpSec returns the record's expiry as keydir/hint seconds: 0 when the record has no expiry, else
+// ExpirySeconds(r.Expiry). Every hint entry and keydir.Entry derives ExpSec through this one function.
+func (r Record) ExpSec() uint32 {
+	if !r.Flags.HasExpiry() {
+		return 0
+	}
+	return ExpirySeconds(r.Expiry)
+}
+
+// ExpirySeconds is the canonical conversion from an expiry instant to the uint32 unix seconds stored in
+// keydir.Entry.ExpSec and in hint files. It rounds up, so a key never expires before its instant; the
+// result is clamped to [1, MaxUint32] (0 is reserved for "never", and 2106 is the end of the format).
+func ExpirySeconds(t time.Time) uint32 {
+	ms := t.UnixMilli()
+	if ms <= 0 {
+		return 1
+	}
+	sec := (ms + 999) / 1000
+	if sec > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(sec)
+}
+
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 // Checksum returns the crc32c (Castagnoli) of payload, the value stored in the record header.
@@ -129,24 +164,186 @@ func ParseHeader(b []byte) (crc, plen uint32, err error) {
 // key and value lengths; writers size their reusable buffer with it.
 func MaxEncodedSize(keyLen, valLen int) int { return HeaderSize + MaxMeta + keyLen + valLen }
 
+// EncodedSize is the exact on-disk size (header included) Append will produce for r. It does not
+// validate r; pair it with the limits when sizing a segment.
+func EncodedSize(r Record) int {
+	n := HeaderSize + 1 + uvarintLen(uint64(r.TS.UnixMilli()))
+	if r.Flags.HasExpiry() {
+		n += uvarintLen(uint64(r.Expiry.UnixMilli()))
+	}
+	return n + uvarintLen(uint64(len(r.Key))) + uvarintLen(uint64(len(r.Value))) + len(r.Key) + len(r.Value)
+}
+
+func uvarintLen(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
+}
+
+// uvarint is binary.Uvarint restricted to the canonical (minimal) encoding, so every payload has
+// exactly one byte representation. n <= 0 means malformed.
+func uvarint(b []byte) (v uint64, n int) {
+	v, n = binary.Uvarint(b)
+	if n <= 0 || n != uvarintLen(v) {
+		return 0, -1
+	}
+	return v, n
+}
+
 // Append encodes r as a complete on-disk record (header + payload) onto dst and returns the grown slice.
-// It validates the size limits and returns ErrTooLarge instead of writing an oversized record.
+// It validates the size limits and returns ErrTooLarge instead of writing an oversized record, and
+// ErrMalformed for a flag bit outside FlagsMask. On error dst is returned unchanged.
 func Append(dst []byte, r Record) ([]byte, error) {
-	_, _ = dst, r
-	return nil, errors.New("stub: record.Append")
+	if len(r.Key) > MaxKey || len(r.Value) > MaxValue {
+		return dst, ErrTooLarge
+	}
+	if r.Flags&^FlagsMask != 0 {
+		return dst, ErrMalformed
+	}
+	start := len(dst)
+	need := MaxEncodedSize(len(r.Key), len(r.Value))
+	if cap(dst)-start < need {
+		grown := make([]byte, start, start+need)
+		copy(grown, dst)
+		dst = grown
+	}
+	// Reserve the header, then write the payload directly after it.
+	dst = dst[:start+HeaderSize]
+	dst = append(dst, byte(r.Flags))
+	dst = binary.AppendUvarint(dst, uint64(r.TS.UnixMilli()))
+	if r.Flags.HasExpiry() {
+		dst = binary.AppendUvarint(dst, uint64(r.Expiry.UnixMilli()))
+	}
+	dst = binary.AppendUvarint(dst, uint64(len(r.Key)))
+	dst = binary.AppendUvarint(dst, uint64(len(r.Value)))
+	dst = append(dst, r.Key...)
+	dst = append(dst, r.Value...)
+	payload := dst[start+HeaderSize:]
+	PutHeader(dst[start:], Checksum(payload), uint32(len(payload))) //nolint:gosec // <= MaxPayload by the limits above
+	return dst, nil
 }
 
 // Decode parses one payload (the bytes after the 8-byte header) without copying: the returned Key and
-// Value alias payload. It never panics on arbitrary input and returns ErrMalformed or ErrTooLarge.
+// Value alias payload (with their capacity clipped, so appending to them never clobbers it). It never
+// panics on arbitrary input and returns ErrMalformed or ErrTooLarge.
 func Decode(payload []byte) (Record, error) {
-	_ = payload
-	return Record{}, errors.New("stub: record.Decode")
+	var r Record
+	if len(payload) < 1 {
+		return r, ErrMalformed
+	}
+	r.Flags = Flags(payload[0])
+	if r.Flags&^FlagsMask != 0 {
+		return r, ErrMalformed
+	}
+	pos := 1
+	ts, n := uvarint(payload[pos:])
+	if n <= 0 {
+		return r, ErrMalformed
+	}
+	pos += n
+	// Timestamps are the two's-complement int64 stored as a uvarint (see the package comment), so the
+	// wrapping conversion is the decoding step, not an overflow.
+	r.TS = time.UnixMilli(int64(ts)) //nolint:gosec // intentional wrap
+	if r.Flags.HasExpiry() {
+		exp, n := uvarint(payload[pos:])
+		if n <= 0 {
+			return r, ErrMalformed
+		}
+		pos += n
+		r.Expiry = time.UnixMilli(int64(exp)) //nolint:gosec // intentional wrap
+	}
+	keyLen, n := uvarint(payload[pos:])
+	if n <= 0 {
+		return r, ErrMalformed
+	}
+	pos += n
+	valLen, n := uvarint(payload[pos:])
+	if n <= 0 {
+		return r, ErrMalformed
+	}
+	pos += n
+	if keyLen > MaxKey || valLen > MaxValue {
+		return r, ErrTooLarge
+	}
+	// Both lengths are small now, so the sums cannot overflow.
+	kl, vl := int(keyLen), int(valLen)
+	if len(payload)-pos != kl+vl {
+		return r, ErrMalformed
+	}
+	r.Key = payload[pos : pos+kl : pos+kl]
+	pos += kl
+	r.Value = payload[pos : pos+vl : pos+vl]
+	return r, nil
+}
+
+// Parse decodes one complete record (header + payload) from the front of b and returns it with its
+// on-disk length. It distinguishes the failure modes a segment reader cares about: ErrTruncated when b
+// ends inside the record (n is then len(b) or HeaderSize+plen, whichever is smaller), ErrTooLarge for a
+// corrupt plen, ErrChecksum for a crc mismatch (n is the full record length), and Decode's errors. Key
+// and Value alias b.
+func Parse(b []byte) (Record, int, error) {
+	crc, plen, err := ParseHeader(b)
+	if err != nil {
+		return Record{}, min(len(b), HeaderSize), err
+	}
+	n := HeaderSize + int(plen)
+	if len(b) < n {
+		return Record{}, len(b), ErrTruncated
+	}
+	payload := b[HeaderSize:n]
+	if !Verify(payload, crc) {
+		return Record{}, n, ErrChecksum
+	}
+	r, err := Decode(payload)
+	return r, n, err
 }
 
 // Read reads exactly one record from r using buf as scratch (grown as needed) and returns the record, the
 // number of bytes consumed and the possibly-grown buffer. io.EOF at a record boundary is returned as is;
-// EOF inside a record is ErrTruncated; a crc mismatch is ErrChecksum.
+// EOF inside a record is ErrTruncated; a crc mismatch is ErrChecksum. The record's Key and Value alias
+// the returned buffer, which the caller may reuse for the next call. On error the count is the number of
+// bytes actually consumed from r, so a sequential caller can still locate the failure.
 func Read(r io.Reader, buf []byte) (Record, int, []byte, error) {
-	_ = r
-	return Record{}, 0, buf, errors.New("stub: record.Read")
+	if cap(buf) < HeaderSize {
+		buf = make([]byte, 0, 4096)
+	}
+	buf = buf[:HeaderSize]
+	n, err := io.ReadFull(r, buf)
+	if err != nil {
+		if errors.Is(err, io.EOF) && n == 0 {
+			return Record{}, 0, buf[:0], io.EOF
+		}
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return Record{}, n, buf[:n], ErrTruncated
+		}
+		return Record{}, n, buf[:n], err
+	}
+	crc, plen, err := ParseHeader(buf)
+	if err != nil {
+		return Record{}, n, buf, err
+	}
+	total := HeaderSize + int(plen)
+	if cap(buf) < total {
+		grown := make([]byte, total)
+		copy(grown, buf[:HeaderSize])
+		buf = grown
+	}
+	buf = buf[:total]
+	m, err := io.ReadFull(r, buf[HeaderSize:])
+	n += m
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return Record{}, n, buf[:n], ErrTruncated
+		}
+		return Record{}, n, buf[:n], err
+	}
+	payload := buf[HeaderSize:total]
+	if !Verify(payload, crc) {
+		return Record{}, n, buf, ErrChecksum
+	}
+	rec, err := Decode(payload)
+	return rec, n, buf, err
 }
