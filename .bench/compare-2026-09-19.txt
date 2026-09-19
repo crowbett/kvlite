@@ -1,0 +1,35 @@
+kvbench 2026-09-19 11:20  n=200000  sizes=100,1024  engines=kvlite,bbolt,pebble  sync=never (all engines)  windows/amd64 go1.27.0  53s
+
+engine  op      value   ops     ops/s    p50     p99      B/op
+kvlite  put     100B    200000  205834   4.0µs   19.1µs   152
+kvlite  get     100B    200000  269452   3.3µs   7.4µs    176
+kvlite  scan    100B    200000  278358   3.1µs   5.6µs    265
+kvlite  delete  100B    100000  227545   3.9µs   7.9µs    32
+bbolt   put     100B    200000  22690    38.5µs  101.8µs  26694
+bbolt   get     100B    200000  888139   0.8µs   3.4µs    720
+bbolt   scan    100B    200000  7992327  0.1µs   0.3µs    16
+bbolt   delete  100B    100000  17266    51.4µs  127.9µs  18425
+pebble  put     100B    200000  726564   1.1µs   1.9µs    43
+pebble  get     100B    200000  57816    16.0µs  36.6µs   204
+pebble  scan    100B    200000  2790712  0.2µs   5.0µs    16
+pebble  delete  100B    100000  820314   1.1µs   1.5µs    36
+kvlite  put     1.0KiB  200000  144258   4.7µs   55.0µs   152
+kvlite  get     1.0KiB  200000  218022   4.0µs   10.3µs   1184
+kvlite  scan    1.0KiB  200000  229832   3.7µs   8.9µs    1274
+kvlite  delete  1.0KiB  100000  215896   4.0µs   10.1µs   32
+bbolt   put     1.0KiB  200000  16512    54.7µs  165.9µs  34891
+bbolt   get     1.0KiB  200000  469632   1.6µs   6.5µs    1632
+bbolt   scan    1.0KiB  200000  6865939  0.1µs   0.4µs    16
+bbolt   delete  1.0KiB  100000  15632    57.5µs  156.3µs  23176
+pebble  put     1.0KiB  200000  272272   1.2µs   3.0µs    95
+pebble  get     1.0KiB  200000  50577    16.8µs  48.4µs   1121
+pebble  scan    1.0KiB  200000  558166   0.3µs   8.9µs    16
+pebble  delete  1.0KiB  100000  820953   1.0µs   1.9µs    39
+
+engine  value   disk before  disk after  compacted  amplification
+kvlite  100B    28.51MiB     15.05MiB    true       1.89x
+bbolt   100B    64.00MiB     64.00MiB    false      1.00x
+pebble  100B    18.58MiB     15.70MiB    true       1.18x
+kvlite  1.0KiB  204.94MiB    103.28MiB   true       1.98x
+bbolt   1.0KiB  512.00MiB    512.00MiB   false      1.00x
+pebble  1.0KiB  79.55MiB     45.53MiB    true       1.75x

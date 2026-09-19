@@ -1,0 +1,20 @@
+kvbench 2026-09-19 11:21  n=20000  sizes=16384  engines=kvlite,bbolt,pebble  sync=never (all engines)  windows/amd64 go1.27.0  9s
+
+engine  op      value    ops    ops/s    p50     p99      B/op
+kvlite  put     16.0KiB  20000  37829    12.1µs  93.9µs   169
+kvlite  get     16.0KiB  20000  83591    8.6µs   75.2µs   18476
+kvlite  scan    16.0KiB  20000  90777    8.3µs   61.1µs   18566
+kvlite  delete  16.0KiB  10000  232834   3.9µs   6.7µs    32
+bbolt   put     16.0KiB  20000  9602     84.8µs  397.7µs  114653
+bbolt   get     16.0KiB  20000  96603    8.1µs   73.2µs   16992
+bbolt   scan    16.0KiB  20000  3611086  0.2µs   0.7µs    16
+bbolt   delete  16.0KiB  10000  9799     84.6µs  405.9µs  105720
+pebble  put     16.0KiB  20000  12179    5.7µs   56.4µs   1548
+pebble  get     16.0KiB  20000  31781    28.3µs  175.5µs  16582
+pebble  scan    16.0KiB  20000  97941    8.0µs   78.4µs   20
+pebble  delete  16.0KiB  10000  904584   0.9µs   1.7µs    33
+
+engine  value    disk before  disk after  compacted  amplification
+kvlite  16.0KiB  313.48MiB    156.83MiB   true       2.00x
+bbolt   16.0KiB  512.00MiB    512.00MiB   false      1.00x
+pebble  16.0KiB  327.74MiB    173.82MiB   true       1.89x
