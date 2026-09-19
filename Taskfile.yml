@@ -1,0 +1,81 @@
+version: "3"
+
+vars:
+  APP: tool
+  MAIN: ./cmd/kvlite
+  BIN: bin/{{.APP}}{{exeExt}}
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+
+env:
+  CGO_ENABLED: "0"
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  tidy:
+    cmds:
+      - go mod tidy
+      - go mod verify
+
+  build:
+    desc: Build into bin/
+    cmds:
+      - go build -trimpath -ldflags="-s -w -X main.version={{.VERSION}}" -o {{.BIN}} {{.MAIN}}
+    sources: ["**/*.go", go.mod, go.sum]
+    generates: ["{{.BIN}}"]
+
+  install:
+    desc: go install into GOPATH/bin
+    cmds:
+      - go install -trimpath -ldflags="-s -w -X main.version={{.VERSION}}" {{.MAIN}}
+
+  run:
+    desc: go run with args  (task run -- greet -name neon)
+    cmds:
+      - go run {{.MAIN}} {{.CLI_ARGS}}
+
+  test:
+    cmds:
+      - go test -count=1 ./...
+
+  test:race:
+    env:
+      CGO_ENABLED: "1"
+    cmds:
+      - go test -race -count=1 ./...
+
+  vet:
+    cmds:
+      - go vet ./...
+
+  lint:
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    cmds:
+      - golangci-lint fmt ./...
+
+  check:
+    deps: [tidy]
+    cmds:
+      - task: vet
+      - task: lint
+      - task: test
+
+  release:check:
+    desc: Validate .goreleaser.yaml
+    cmds:
+      - goreleaser check
+
+  release:snapshot:
+    desc: Local cross-platform build into dist/
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  clean:
+    cmds:
+      - '{{if eq OS "windows"}}powershell -NoProfile -Command "Remove-Item -Recurse -Force bin, dist -ErrorAction SilentlyContinue"{{else}}rm -rf bin dist{{end}}'
