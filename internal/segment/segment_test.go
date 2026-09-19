@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -1070,6 +1071,93 @@ func TestConcurrentReaders(t *testing.T) {
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestReaderHandlePool: OpenReaderN clamps the handle count, every handle in the pool serves correct
+// reads under concurrency (more goroutines than handles, so the round-robin wraps), the default is
+// platform-specific, and Close closes every handle (later reads fail with os.ErrClosed).
+func TestReaderHandlePool(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	recs := fixtureRecords()
+	offs, sizes := build(t, dir, 1, recs)
+	tests := []struct {
+		name string
+		n    int
+		want int
+	}{
+		{"zero clamps to one", 0, 1},
+		{"negative clamps to one", -3, 1},
+		{"one", 1, 1},
+		{"four", 4, 4},
+		{"above the cap", MaxReadHandles + 5, MaxReadHandles},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			r, err := OpenReaderN(dir, 1, tt.n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r.Handles(); got != tt.want {
+				t.Fatalf("Handles() = %d, want %d", got, tt.want)
+			}
+			var wg sync.WaitGroup
+			for g := range 3 * tt.want {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := range 3 * MaxReadHandles {
+						j := (g + i) % len(recs)
+						rec, _, err := r.ReadAt(offs[j], sizes[j])
+						if err != nil || !bytes.Equal(rec.Key, recs[j].Key) || !bytes.Equal(rec.Value, recs[j].Value) {
+							t.Errorf("goroutine %d: ReadAt(%d) = %+v, %v", g, j, rec, err)
+							return
+						}
+					}
+					n := 0
+					if err := r.Scan(func(uint32, record.Record) error { n++; return nil }); err != nil || n != len(recs) {
+						t.Errorf("goroutine %d: Scan = %d, %v", g, n, err)
+					}
+				}()
+			}
+			wg.Wait()
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.ReadAt(offs[0], sizes[0]); !errors.Is(err, os.ErrClosed) {
+				t.Fatalf("ReadAt after Close = %v, want os.ErrClosed", err)
+			}
+			if err := r.Close(); err != nil {
+				t.Fatalf("second Close = %v", err)
+			}
+		})
+	}
+	t.Run("default", func(t *testing.T) {
+		t.Parallel()
+		want := DefaultReadHandles()
+		if runtime.GOOS == "windows" {
+			if want < 1 || want > 8 {
+				t.Fatalf("DefaultReadHandles() = %d on windows, want 1..8", want)
+			}
+		} else if want != 1 {
+			t.Fatalf("DefaultReadHandles() = %d, want 1 off windows (pread is lock-free)", want)
+		}
+		r, err := OpenReader(dir, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		if got := r.Handles(); got != want {
+			t.Fatalf("OpenReader opened %d handles, want %d", got, want)
+		}
+	})
+	t.Run("missing file fails cleanly", func(t *testing.T) {
+		t.Parallel()
+		if _, err := OpenReaderN(dir, 99, 4); err == nil {
+			t.Fatal("OpenReaderN on a missing segment succeeded")
+		}
+	})
 }
 
 // TestGolden pins testdata/ (see the fixture comment): with -update it rewrites the files, otherwise

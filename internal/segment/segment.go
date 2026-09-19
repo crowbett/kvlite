@@ -25,6 +25,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -300,18 +301,45 @@ func (w *Writer) Close() error {
 
 // Reader serves random and sequential reads of one immutable (or append-only) segment. It is safe for
 // concurrent use; readers share it and pin it with Ref/Unref.
+//
+// A Reader may hold several handles on the same file (see DefaultReadHandles): Go's os.File.ReadAt
+// takes the handle's read+write lock around every ReadFile on Windows, so concurrent reads through
+// one handle queue up. Each ReadAt and Scan picks a handle round-robin; the first one also serves
+// Stat. On unix pread needs no lock and one handle is enough.
 type Reader struct {
 	id     uint32
 	refs   atomic.Int32
-	f      *os.File
+	f      *os.File   // primary handle: Stat, and the pool's first member
+	extra  []*os.File // additional handles on the same file, all opened read-only
+	next   atomic.Uint32
 	closed atomic.Bool
 	// closeOnce makes Close idempotent; closeErr is what the first Close returned.
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// OpenReader opens dir/<id>.log for reading and validates the prologue (ErrBadHeader).
+// MaxReadHandles caps the handles a Reader opens per segment.
+const MaxReadHandles = 16
+
+// DefaultReadHandles is how many handles OpenReader opens per segment: one on unix, where pread is
+// lock-free, and min(NumCPU, 8) on Windows, where every ReadAt on one handle serialises (see Reader).
+func DefaultReadHandles() int {
+	if runtime.GOOS != "windows" {
+		return 1
+	}
+	return min(max(runtime.NumCPU(), 1), 8)
+}
+
+// OpenReader opens dir/<id>.log for reading with DefaultReadHandles handles and validates the
+// prologue (ErrBadHeader).
 func OpenReader(dir string, id uint32) (*Reader, error) {
+	return OpenReaderN(dir, id, DefaultReadHandles())
+}
+
+// OpenReaderN is OpenReader with an explicit handle count (clamped to [1, MaxReadHandles]). Every
+// handle is opened before the Reader is returned; a failure closes them all.
+func OpenReaderN(dir string, id uint32, handles int) (*Reader, error) {
+	handles = min(max(handles, 1), MaxReadHandles)
 	path := filepath.Join(dir, LogName(id))
 	f, err := os.Open(path) //nolint:gosec // segment file
 	if err != nil {
@@ -327,7 +355,32 @@ func OpenReader(dir string, id uint32) (*Reader, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("segment: open %s: %w", path, err)
 	}
-	return &Reader{id: id, f: f}, nil
+	r := &Reader{id: id, f: f}
+	for i := 1; i < handles; i++ {
+		g, err := os.Open(path) //nolint:gosec // segment file
+		if err != nil {
+			_ = r.Close()
+			return nil, fmt.Errorf("segment: open %s (handle %d of %d): %w", path, i+1, handles, err)
+		}
+		r.extra = append(r.extra, g)
+	}
+	return r, nil
+}
+
+// Handles returns how many file handles the reader holds.
+func (r *Reader) Handles() int { return 1 + len(r.extra) }
+
+// pick returns the handle the next read should use: round-robin over the pool, the primary alone
+// when there is no pool.
+func (r *Reader) pick() *os.File {
+	if len(r.extra) == 0 {
+		return r.f
+	}
+	i := int(r.next.Add(1) % uint32(r.Handles())) //nolint:gosec // Handles() <= MaxReadHandles
+	if i == 0 {
+		return r.f
+	}
+	return r.extra[i-1]
 }
 
 // ID returns the segment id.
@@ -368,7 +421,7 @@ func (r *Reader) ReadAtBuf(off, size uint32, buf []byte) (record.Record, []byte,
 		buf = make([]byte, size)
 	}
 	buf = buf[:size]
-	n, err := r.f.ReadAt(buf, int64(off))
+	n, err := r.pick().ReadAt(buf, int64(off))
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			return record.Record{}, buf[:n], fmt.Errorf("segment %d: read %d+%d past end: %w", r.id, off, size, ErrOutOfRange)
@@ -414,7 +467,7 @@ func (r *Reader) ScanFrom(off uint32, fn func(off uint32, rec record.Record) err
 	if int64(off) > size || off < record.SegmentHeaderSize {
 		return fmt.Errorf("segment %d: scan from %d of %d: %w", r.id, off, size, ErrOutOfRange)
 	}
-	br := bufio.NewReaderSize(io.NewSectionReader(r.f, int64(off), size-int64(off)), ScanBufferSize)
+	br := bufio.NewReaderSize(io.NewSectionReader(r.pick(), int64(off), size-int64(off)), ScanBufferSize)
 	buf := make([]byte, 0, 64<<10)
 	pos := off
 	for {
@@ -484,7 +537,8 @@ func (r *Reader) Resync(from uint32) (next uint32, found bool, err error) {
 		return 0, false, nil
 	}
 	const peek = record.HeaderSize + record.MaxMeta
-	br := bufio.NewReaderSize(io.NewSectionReader(r.f, int64(from), size-int64(from)), ScanBufferSize)
+	f := r.pick()
+	br := bufio.NewReaderSize(io.NewSectionReader(f, int64(from), size-int64(from)), ScanBufferSize)
 	var buf []byte
 	for pos := int64(from); pos+record.HeaderSize <= size; pos++ {
 		b, perr := br.Peek(peek)
@@ -499,7 +553,7 @@ func (r *Reader) Resync(from uint32) (next uint32, found bool, err error) {
 			if cap(buf) < total {
 				buf = make([]byte, total)
 			}
-			if _, rerr := r.f.ReadAt(buf[:total], pos); rerr != nil && !errors.Is(rerr, io.EOF) {
+			if _, rerr := f.ReadAt(buf[:total], pos); rerr != nil && !errors.Is(rerr, io.EOF) {
 				return 0, false, fmt.Errorf("segment %d: resync at %d: %w", r.id, pos, rerr)
 			}
 			if _, n, perr := record.Parse(buf[:total]); perr == nil && n == total {
@@ -571,10 +625,15 @@ func (r *Reader) Refs() int { return int(r.refs.Load()) }
 func (r *Reader) Close() error {
 	r.closeOnce.Do(func() {
 		r.closed.Store(true)
+		var errs []error
 		if r.f != nil {
-			if err := r.f.Close(); err != nil {
-				r.closeErr = fmt.Errorf("segment %d: close: %w", r.id, err)
-			}
+			errs = append(errs, r.f.Close())
+		}
+		for _, g := range r.extra {
+			errs = append(errs, g.Close())
+		}
+		if err := errors.Join(errs...); err != nil {
+			r.closeErr = fmt.Errorf("segment %d: close: %w", r.id, err)
 		}
 	})
 	return r.closeErr
