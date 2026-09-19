@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"slices"
 	"text/tabwriter"
 	"time"
 
@@ -680,11 +680,7 @@ func deepHintCheck(dir string, id uint32) (int, []string) {
 		if !bytes.Equal(rec.Key, e.Key) {
 			findings = append(findings, fmt.Sprintf("hint off=%d: key mismatch (hint %q, log %q)", e.Off, e.Key, rec.Key))
 		}
-		var recExp uint32
-		if rec.Flags.HasExpiry() && !rec.Expiry.IsZero() {
-			recExp = uint32(rec.Expiry.Unix()) //nolint:gosec // ExpSec is defined as unix seconds in uint32
-		}
-		if recExp != e.ExpSec {
+		if recExp := rec.ExpSec(); recExp != e.ExpSec {
 			findings = append(findings, fmt.Sprintf("hint off=%d: expiry mismatch (hint %d, log %d)", e.Off, e.ExpSec, recExp))
 		}
 		if rec.Flags.Tombstone() {
@@ -694,18 +690,23 @@ func deepHintCheck(dir string, id uint32) (int, []string) {
 	return len(entries), findings
 }
 
-// logIDs lists the segment ids of every *.log in dir, ascending.
+// logIDs lists the segment ids of every *.log in dir, ascending. It walks the directory rather than
+// filepath.Glob so a store path holding glob metacharacters ("data[1]") is still verifiable.
 func logIDs(dir string) ([]uint32, error) {
-	names, err := filepath.Glob(filepath.Join(dir, "*"+segment.LogSuffix))
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("verify: %w", err)
 	}
-	ids := make([]uint32, 0, len(names))
-	for _, n := range names {
-		if id, hint, ok := segment.ParseName(filepath.Base(n)); ok && !hint {
+	ids := make([]uint32, 0, len(ents))
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		if id, hint, ok := segment.ParseName(e.Name()); ok && !hint {
 			ids = append(ids, id)
 		}
 	}
+	slices.Sort(ids)
 	return ids, nil
 }
 

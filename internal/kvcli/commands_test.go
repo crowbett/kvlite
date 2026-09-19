@@ -464,6 +464,36 @@ func TestVerify(t *testing.T) {
 			t.Errorf("orphan not named:\n%s", out)
 		}
 	})
+	t.Run("missing manifest in a dir with glob metacharacters", func(t *testing.T) {
+		t.Parallel()
+		// verify without a MANIFEST falls back to listing *.log itself; a path like "data[1]" used
+		// to be parsed as a glob pattern and silently found no segments at all.
+		dir := filepath.Join(t.TempDir(), "data[1]")
+		db, err := kvlite.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Put([]byte("k"), []byte("v")); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(dir, "MANIFEST")); err != nil {
+			t.Fatal(err)
+		}
+		out, err := run(t, "", "verify", "-dir", dir, "-json")
+		if !errors.Is(err, ErrVerify) {
+			t.Fatalf("verify(no manifest) = %v, want ErrVerify (the missing MANIFEST is a finding)\n%s", err, out)
+		}
+		var rep verifyReport
+		if err := json.Unmarshal([]byte(out), &rep); err != nil {
+			t.Fatalf("not JSON: %v\n%s", err, out)
+		}
+		if rep.Manifest != "missing" || len(rep.Segments) != 1 || rep.Segments[0].Records != 1 {
+			t.Errorf("report = %+v, want manifest=missing and the one segment with one record", rep)
+		}
+	})
 	t.Run("missing dir", func(t *testing.T) {
 		t.Parallel()
 		_, err := run(t, "", "verify", "-dir", filepath.Join(t.TempDir(), "nope"))
