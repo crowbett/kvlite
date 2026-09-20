@@ -380,10 +380,15 @@ P16 pass over this repository (commits `13ff4b7..HEAD` on main). Baseline before
   library, no remote caller); `Resync`/`verify` are byte-granular and O(n * candidate) on a hostile file (repair
   and verify paths only, local files); every `uint32` conversion from disk is bounds-checked first (gosec on, nolint
   comments state the bound); the `-dir` flag is the user's own path (a local CLI, no traversal boundary).
-- **Fuzz.** Targets and 60 s local runs (no crasher, nothing added to `testdata/fuzz`): `FuzzRecord` 295,937 execs;
-  `FuzzSegmentScan` (new) 3,851 - it writes a real file per input, Windows file I/O bounds it; `FuzzHint` (new)
-  430,398; `FuzzParseName` (new) 11,078,416; `FuzzManifest` (new) 2,624,574; `FuzzCommitMarker` (new) 4,650,954;
-  `FuzzDB` 465 (~8/s, as expected). `task fuzz` and CI's fuzz-smoke job now run every target.
+- **Fuzz.** Targets and 60 s local runs: `FuzzRecord` 295,937 execs; `FuzzSegmentScan` (new) 9,900 - it writes a
+  real file per input and Windows file I/O bounds it (Linux CI does ~7k/s); `FuzzHint` (new) 430,398; `FuzzParseName`
+  (new) 11,078,416; `FuzzManifest` (new) 2,624,574; `FuzzCommitMarker` (new) 4,650,954; `FuzzDB` 465 (~8/s, as
+  expected). **One crasher**, found by `FuzzSegmentScan` on CI's first run: a sealed segment whose last record
+  fails its crc while its value contains a well-formed record. `Tail` is true, `VerifySegment` stops, but recovery
+  under `WithRepair` resynced byte-wise into the corrupt record and adopted the decoy as a live key. Fixed in
+  `scanSegment` (drop the tail, never resync past a `Tail` error), pinned by `TestRepairDecoyInCorruptTail` and the
+  committed input `internal/segment/testdata/fuzz/FuzzSegmentScan/decoy-in-corrupt-tail`; the `Tail` contract in the
+  segment package doc now says so. `task fuzz` and CI's fuzz-smoke job run every target.
 - **Coverage** (statements, `-covermode=atomic`), core packages before -> after: root `kvlite` 87.3 -> 87.4 %,
   `record` 99.3 -> 99.3 %, `segment` 86.3 -> 86.4 %, `keydir` 100 -> 100 %, `manifest` 85.0 -> 85.0 %,
   `fslock` 91.7 -> 91.7 % (all already above the 80 % bar; `kvcli` 84.6 -> 88.1 %). No padding tests were added.
@@ -392,8 +397,10 @@ P16 pass over this repository (commits `13ff4b7..HEAD` on main). Baseline before
   load (`.bench/handles-2026-09-19-*.txt`): `Get/par8` -44 %, `par16` -60 %, `par1` unchanged. The full baseline
   was **not** refreshed: the box was shared with other test suites for the whole pass and a count=6 run on it would
   have replaced a clean reference with a noisy one. README's table keeps the committed baseline and says so.
-- **CI.** Run 35477026324 green on every job (test ubuntu + windows `-race`, lint, bench module, fuzz smoke of all
-  seven targets, goreleaser check). Root suite also green in `golang:1.27` on Linux via Docker.
+- **CI.** Run 35477026324 (the fixes + fuzzers + pool) green on every job; run 35477852973 (docs) went red on
+  fuzz-smoke with the crasher above, fixed in the next push (see the run id recorded in the final report). Jobs:
+  test ubuntu + windows `-race`, lint, bench module, fuzz smoke of all seven targets, goreleaser check. Root suite
+  also green in `golang:1.27` on Linux via Docker.
 - **goreleaser.** `.goreleaser.yaml` v2 (linux/windows/darwin x amd64/arm64, `-trimpath -s -w`, version/commit/date
   stamped, archives + sha256 checksums); `goreleaser check` passes and `goreleaser release --snapshot --clean` builds
   all six targets locally (`kvlite -version` -> `0.0.1-next (de3da65, ...)`). No LICENSE file exists, so the archive
