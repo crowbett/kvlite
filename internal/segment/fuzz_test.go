@@ -109,9 +109,10 @@ func segmentSeeds(tb testing.TB) [][]byte {
 // FuzzSegmentScan writes arbitrary bytes as 00000001.log and drives OpenReader, Scan, ScanFrom,
 // Resync, ReadAt and VerifySegment over it. Invariants: nothing panics; every record Scan yields
 // sits inside the file, re-parses identically from its offset and reads back through ReadAt;
-// a ScanError names an offset inside the file with Tail == false only when Resync can indeed find a
-// record after it, and ScanFrom(next) then yields at least one record; VerifySegment counts the same
-// records as a repairing walk and its findings sit inside the file.
+// a ScanError names an offset inside the file, Tail == false always has a record Resync can find and
+// ScanFrom(next) then yields it; VerifySegment counts exactly what a repairing walk (resync after a
+// mid-file error, stop at a tail error, like recovery under WithRepair) counts, and its findings sit
+// inside the file.
 func FuzzSegmentScan(f *testing.F) {
 	for _, s := range segmentSeeds(f) {
 		f.Add(s)
@@ -188,15 +189,18 @@ func FuzzSegmentScan(f *testing.F) {
 				!errors.Is(err, record.ErrMalformed) && !errors.Is(err, record.ErrTooLarge) {
 				t.Fatalf("ScanError wraps an unknown cause: %v", err)
 			}
+			if se.Tail {
+				// Nothing decodable follows as a record. Resync may still find a decoy inside the bad
+				// record's own bytes (a value that contains a record), which is exactly why recovery
+				// and VerifySegment stop here instead of resyncing.
+				break
+			}
 			next, found, rerr := r.Resync(se.Off + 1)
 			if rerr != nil {
 				t.Fatalf("Resync: %v", rerr)
 			}
-			if !se.Tail && !found {
-				t.Fatalf("Tail=false at %d but Resync finds nothing after it", se.Off)
-			}
 			if !found {
-				break
+				t.Fatalf("Tail=false at %d but Resync finds nothing after it", se.Off)
 			}
 			if next <= se.Off || int(next)+record.HeaderSize > len(data) {
 				t.Fatalf("Resync(%d) = %d, out of range for %d bytes", se.Off+1, next, len(data))

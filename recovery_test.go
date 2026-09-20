@@ -242,6 +242,68 @@ func TestCorruptMiddle(t *testing.T) {
 	noOrphans(t, dir)
 }
 
+// TestRepairDecoyInCorruptTail: the last record of a sealed segment fails its crc and its value happens
+// to contain a well-formed record ("decoy"). Tail is true (the record's extent reaches end of file), so a
+// repairing open drops the tail without resyncing into the bad record's bytes: the decoy key is never
+// adopted, the other keys survive, one repair is counted. Found by FuzzSegmentScan on CI (the corpus entry
+// is internal/segment/testdata/fuzz/FuzzSegmentScan/decoy-in-corrupt-tail).
+func TestRepairDecoyInCorruptTail(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	db := openTest(t, dir)
+	m := fill(t, db, 20)
+	inner, err := record.Append(nil, record.Record{Key: []byte("decoy"), Value: []byte("phantom"), TS: db.now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustPut(t, db, []byte("outer"), inner)
+	if err := db.Compact(t.Context()); err != nil { // seals everything into a hinted output segment
+		t.Fatal(err)
+	}
+	sealed := db.man.Segments[0]
+	if sealed == db.man.Active {
+		t.Fatalf("segment %d is active, want a sealed one", sealed)
+	}
+	closeTest(t, db)
+	// Make "outer" the last record of the sealed segment's log and break its crc; drop the hint so
+	// recovery must scan the log.
+	recs := segmentRecords(t, dir, sealed)
+	last := recs[len(recs)-1]
+	if fileSize(t, logPath(dir, sealed)) != last[0]+last[1] {
+		t.Fatalf("last record does not end at EOF")
+	}
+	r, err := segment.OpenReader(dir, sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _, err := r.ReadAt(uint32(last[0]), uint32(last[1]))
+	_ = r.Close()
+	if err != nil || string(rec.Key) != "outer" {
+		t.Fatalf("last record is %q (%v); the merge keeps write order, so it must be \"outer\"", rec.Key, err)
+	}
+	// Flip the outer record's flags byte: its crc fails while the decoy's bytes (inside its value) stay intact.
+	flipByte(t, logPath(dir, sealed), last[0]+record.HeaderSize)
+	if err := os.Remove(hintPath(dir, sealed)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(dir); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Open without repair = %v, want ErrCorrupt", err)
+	}
+	db = openTest(t, dir, WithRepair())
+	defer closeTest(t, db)
+	if _, err := db.Get([]byte("decoy")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get(decoy) = %v, want ErrNotFound: the repair adopted a record from inside a corrupt value", err)
+	}
+	if _, err := db.Get([]byte("outer")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get(outer) = %v, want ErrNotFound (its record is the corrupt tail)", err)
+	}
+	m.check(t, db, nil)
+	if s := db.Stats(); s.Repairs != 1 {
+		t.Errorf("Stats().Repairs = %d, want 1", s.Repairs)
+	}
+}
+
 // TestCorruptActiveMiddle: a bad crc in the active segment with good records after it is corruption,
 // not a torn tail.
 func TestCorruptActiveMiddle(t *testing.T) {

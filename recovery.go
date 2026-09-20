@@ -322,6 +322,14 @@ func (db *DB) scanSegment(ld *loader, r segReader, size int64, active bool) (int
 		if !ok {
 			return 0, &CorruptError{Seg: id, Off: bad, Reason: reason, Err: se.Err}
 		}
+		if se.Tail {
+			// A sealed segment whose last record is bad: nothing decodable follows it as a record.
+			// Resync would still scan the bad record's own bytes and can find a decoy inside its
+			// value (FuzzSegmentScan, testdata/fuzz/FuzzSegmentScan/decoy-in-corrupt-tail), which is
+			// not a key the store ever held; VerifySegment stops here too.
+			db.logger().Warn("kvlite: repair: dropped unreadable tail", "seg", id, "off", bad, "reason", reason)
+			return size, nil
+		}
 		next, found, rerr := rp.Resync(se.Off + 1)
 		if rerr != nil {
 			return 0, fmt.Errorf("kvlite: repair segment %d: %w", id, rerr)

@@ -4,10 +4,12 @@
 //
 // Recovery contract (package kvlite's open/recovery code relies on this):
 //   - Reader.Scan stops at the first bad record and returns a *ScanError carrying the record's
-//     absolute offset. ScanError.Tail is true exactly when no decodable record starts after that
-//     offset (the file ends inside the record, the record's extent reaches end of file, or only
-//     zero-fill/garbage follows), so truncating the log at ScanError.Off loses nothing decodable.
-//     Tail == false means corruption in the middle of the file: decodable records follow.
+//     absolute offset. ScanError.Tail is true when nothing after that offset is a record: the file
+//     ends inside the record, the record's declared extent reaches end of file, or only zero-fill/
+//     garbage follows. Truncating the log at ScanError.Off then loses nothing that was ever a record
+//     (a byte-granular Resync could still "find" one inside the bad record's own bytes, e.g. a value
+//     that contains a record; callers must not resync past a Tail error). Tail == false means
+//     corruption in the middle of the file: a decodable record follows and Resync locates it.
 //   - Reader.Resync locates the next decodable record after a corruption so a repairing open can
 //     continue with Reader.ScanFrom.
 //   - Offsets passed to fn, stored in hints and accepted by ReadAt are absolute file offsets of the
