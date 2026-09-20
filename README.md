@@ -111,7 +111,7 @@ file (`.bench/baseline.txt`, `.bench/compare-2026-09-19*.txt`); nothing is typed
 | Get seq / rand, 1 KiB | 3.96 µs ± 1% / 6.57 µs | 1 | |
 | Get seq / rand, 16 KiB | 21.7 µs ± 5% / 24.9 µs | 1 | |
 | Get miss | 67.9 ns ± 1% | 0 | keydir only |
-| Get par1 / par8 / par16, 1 KiB | 6.56 / 13.0 / 13.1 µs | 1 | **does not scale** - see the reading below |
+| Get par1 / par8 / par16, 1 KiB | 6.56 / 13.0 / 13.1 µs | 1 | measured **before** the read handle pool - see the reading below |
 | Delete | 4.05 µs ± 8% | 0 | tombstone append |
 | Scan 200k keys, 100 B / 1 KiB / 16 KiB | 346 / 397 / 165 ms | 100k / 100k / 8.4k | snapshot copy + one read per key |
 | Scan prefix (1/16 of the keys), 1 KiB | 28.4 ms ± 7% | 10 | binary search into the sorted snapshot |
@@ -155,11 +155,14 @@ Reading it honestly:
   At 16 KiB the read is dominated by the copy and kvlite and bbolt tie.
 - **Scans**: bbolt's cursor walks mmap'd leaf pages and is in a different league (8M keys/s). kvlite's snapshot iterator
   is one `pread` per key, so a scan costs the same as a get; that is the stated v1 trade-off (point ops first).
-- **Parallel reads do not scale on Windows** (`Get/par8` 13.0 µs vs `par1` 6.6 µs; the CLI bench with 8 readers shows a
-  682 µs p99): Go's `os.File.ReadAt` on Windows takes the handle's read **and** write lock around `ReadFile`
-  (`internal/poll.FD.Pread` -> `readWriteLock`, because it seeks on blocking handles), so every reader of one
-  segment serialises on one lock. Fix is one handle per reader
-  (a small handle pool per segment) - listed under follow-ups, not done.
+- **Parallel reads on Windows**: the baseline above (`Get/par8` 13.0 µs vs `par1` 6.6 µs; the CLI bench with 8 readers
+  showed a 682 µs p99) predates the per-segment read handle pool. Go's `os.File.ReadAt` on Windows takes the handle's
+  read **and** write lock around `ReadFile` (`internal/poll.FD.Pread` -> `readWriteLock`), so every reader of one
+  segment used to serialise on one lock; a `segment.Reader` now opens min(NumCPU, 8) handles on Windows (1 on unix,
+  where `pread` is lock-free) and picks one round-robin per read. A/B on the same box and load
+  (`.bench/handles-2026-09-19-{before,after}.txt`, `-benchstat.txt`, count=6): `par8` 24.3 -> 13.6 µs (-44 %, p=0.015),
+  `par16` 33.2 -> 13.2 µs (-60 %, p=0.002), `par1` unchanged. The box was loaded during that run (wide CIs), so the
+  full baseline table has not been refreshed yet - see follow-ups.
 - **Disk**: the workload leaves kvlite with ~2x its live size (every delete is a tombstone, every overwrite a dead record)
   until `Compact`, which brings it to live size + hints. Pebble's LSM is 1.2-1.9x for the same reason. bbolt never
   shrinks its file; 64 MiB for 20 MiB of data at 100 B, 512 MiB at 1 KiB.
@@ -170,24 +173,30 @@ Reading it honestly:
 
 ```powershell
 task test            # go test -race -count=1 ./... (root) ; cd bench ; go test -race ./...
-task fuzz            # FuzzRecord 30 s
+task fuzz            # every parser 30 s each: FuzzRecord, FuzzSegmentScan, FuzzHint, FuzzParseName, FuzzManifest, FuzzCommitMarker
 go test -run '^$' -fuzz='^FuzzDB$' -fuzztime=60s .        # op-script fuzz against a map model, with reopen
 task compare         # cross-engine go-test benchmarks ; task kvbench -- -n 200000 -sizes 100,1024
 ```
 
 - `FuzzRecord`: `Decode(Append(r))` field-identical; arbitrary bytes never panic and never alias outside the input.
+- `FuzzSegmentScan`: arbitrary bytes as a segment file through `OpenReader`, a repairing `Scan`/`Resync`/`ScanFrom`
+  walk, `ReadAt` and `VerifySegment`: every yielded record re-parses from its offset, `Tail=false` always has a record
+  behind it, verify counts what the walk counted. `FuzzHint`/`FuzzManifest`: parse never panics, honours the footer
+  count / length before allocating, round-trips through the encoder (the MANIFEST encoding is canonical).
+  `FuzzParseName`, `FuzzCommitMarker`: the name and commit-marker parsers against their printers.
 - `FuzzDB`: the corpus decodes into an op script (put/puttl/del/batch/compact/reopen) run against a real DB and a
   `map[string]string` model on a fake clock; every model key must match after every op and every reopen.
 - Crash tests: torn tail at every cut point, corrupt mid-file with and without `WithRepair`, five compaction stages,
   batch without marker, lock contention, orphan sweep, evict-while-reading.
 - CI (`.github/workflows/ci.yml`): ubuntu + windows `-race`, lint v2 + zero-dependency guard on the root `go.mod`,
-  bench module build/test + a 2k-key kvbench smoke, 20 s of each fuzzer, `goreleaser check`.
+  bench module build/test + a 2k-key kvbench smoke, 20 s of every fuzzer, `goreleaser check`.
 
 ## Follow-ups
 
 - Keydir behind an `index` interface: an ART or B-tree would make `Snapshot()` O(1) instead of an O(keys) copy.
-- One file handle per reader per segment (or an mmap read path) so parallel `Get`s stop serialising on Go's per-handle
-  Windows `ReadAt` lock; `Get` at ~3.5 us single-threaded is already the `ReadFile` floor.
+- Refresh `.bench/baseline.txt` on a quiet box (`scripts/bench.ps1 -Save baseline -Count 6`) so the table above reflects
+  the read handle pool; an mmap read path would remove the per-read syscall entirely, but `Get` at ~3.5 us
+  single-threaded is already the `ReadFile` floor.
 - Space amplification before compaction is ~2x under a delete-heavy workload (tombstones and overwritten records stay
   until the next merge); `WithAutoCompact` bounds it, a size-tiered trigger per segment would bound it tighter.
 - Values stream neither in nor out (16 MiB cap, fully in memory).

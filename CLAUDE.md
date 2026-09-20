@@ -9,10 +9,10 @@ The design is ADR-0001 in `docs/PLAN.md` - read it before touching anything belo
 ```
 db.go options.go errors.go stats.go batch.go     package kvlite: public API, writer path, TTL      (WS-B)
 open.go recovery.go snapshot.go compact.go       package kvlite: Open/recover, Snapshot, Compact  (WS-C)
-fuzz_test.go                                     FuzzDB model fuzzer                              (WS-D)
+fuzz_test.go perm_test.go                        FuzzDB model fuzzer, FuzzCommitMarker, file-mode pin  (WS-D)
 internal/record/    record encode/decode, crc32c, limits, FuzzRecord                              (WS-A)
-internal/segment/   segment + hint files: Writer/Reader/Scan/refcount/VerifySegment              (WS-A)
-internal/manifest/  MANIFEST encode/decode, atomic swap, orphan detection                         (WS-A)
+internal/segment/   segment + hint files: Writer/Reader(handle pool)/Scan/refcount/VerifySegment; fuzzers (WS-A)
+internal/manifest/  MANIFEST encode/decode, atomic swap, orphan detection, FuzzManifest           (WS-A)
 internal/fslock/    LOCK file (Windows share-mode 0 / unix flock / O_EXCL fallback)              (WS-A)
 internal/keydir/    sharded map, 16-byte pointer-free Entry, CompareAndSwap, packed Sorted       (WS-B)
 internal/kvcli/     get/put/del/scan/stats/compact/verify/bench on top of internal/cli           (WS-D)
@@ -70,7 +70,7 @@ Imports flow one way: `kvlite -> {record, segment, keydir, manifest, fslock}`, `
 
 ## Commands (Taskfile.yml)
 `task build|install|run -- <args>`, `task test`, `task test:race`, `task vet`, `task lint`, `task fmt`,
-`task fuzz` (FuzzRecord 30 s), `task bench` (internal/bench, unsaved), `task compare` (bench/ module, all
+`task fuzz` (every parser 30 s each), `task bench` (internal/bench, unsaved), `task compare` (bench/ module, all
 engines, go-test form), `task kvbench -- -n 200000 -sizes 100,1024` (runner table), `task check`,
 `task release:check`, `task release:snapshot`.
 Baselines: `pwsh -NoProfile -File scripts/bench.ps1 -Pkg ./internal/bench/... -Save baseline -Count 10`
@@ -78,8 +78,8 @@ Baselines: `pwsh -NoProfile -File scripts/bench.ps1 -Pkg ./internal/bench/... -S
 Cross-engine table: `cd bench; go run ./cmd/kvbench -n 200000 -sizes 100,1024 -out ../.bench/compare-<date>.txt`.
 Long fuzz: `go test -run '^$' -fuzz='^FuzzDB$' -fuzztime=120s .` (keep any new `testdata/fuzz/FuzzDB` entry).
 CI (`.github/workflows/ci.yml`): test on ubuntu + windows (`-race`), lint (golangci-lint v2), bench module
-build/vet/test + a 2k-key kvbench smoke, 20 s fuzz smoke of both fuzzers, `goreleaser check` (snapshot build
-on `v*` tags).
+build/vet/test + a 2k-key kvbench smoke, 20 s fuzz smoke of every `Fuzz*` target, `goreleaser check` (snapshot
+build on `v*` tags).
 
 ## Definition of done
 `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...`, `golangci-lint run ./...` (0 issues),

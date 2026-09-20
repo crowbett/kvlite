@@ -360,3 +360,42 @@ Lane deviations (steps 2-10, recorded at close-out, 2026-09-19; all committed an
   `time.Now`'s monotonic source steps at 0.5-15 ms there.
 - **Integrator** the kvlite-only baseline is 200k keys on `Open` (not the ADR's 1M) so a `-count 10` run fits
   the `.bench/README.md` budget; `task fuzz` runs FuzzRecord 30 s, CI runs both fuzzers 20 s.
+
+## Hardening (2026-09-19)
+
+P16 pass over this repository (commits `13ff4b7..HEAD` on main). Baseline before touching anything: `go build`,
+`go vet`, `golangci-lint run` (0 issues), `go test -race -count=3 ./...` all green; `cd bench; go build; go vet` green.
+
+- **Vulnerabilities.** `govulncheck ./...` on the root module: none (zero dependencies). Bench module: GO-2026-5970
+  (`golang.org/x/text` v0.14.0, infinite loop on invalid input) is present transitively via pebble and **not
+  reachable** from `bench/`; left unbumped on purpose (the bench module pins the engines being compared).
+- **Security review** (ASVS-lite; no network surface, so TLS/CORS/auth items do not apply). Fixed, each with a test:
+  `put <key> -` read stdin with `io.ReadAll` and buffered an endless stream before the store could refuse it - now
+  capped at `MaxValueBytes` (+1, 2x for hex/base64) and fails with `ErrValueTooLarge` (`TestPutStdinCapped`);
+  segments, hints and MANIFEST were created 0644, so every value was world-readable on unix - now 0600
+  (`segment.FileMode`, `manifest.FileMode`, `TestStoreFilesAreOwnerOnly`, mode assertions verified in
+  `golang:1.27` on Linux); `kvlite verify` without a MANIFEST used `filepath.Glob` on the store path, so a directory
+  named `data[1]` verified zero segments - now `os.ReadDir` (+ the `-deep` expiry check derives the log side through
+  `record.ExpSec` like hints and the keydir do). Judged acceptable: error strings carry file paths (embedded
+  library, no remote caller); `Resync`/`verify` are byte-granular and O(n * candidate) on a hostile file (repair
+  and verify paths only, local files); every `uint32` conversion from disk is bounds-checked first (gosec on, nolint
+  comments state the bound); the `-dir` flag is the user's own path (a local CLI, no traversal boundary).
+- **Fuzz.** Targets and 60 s local runs (no crasher, nothing added to `testdata/fuzz`): `FuzzRecord` 295,937 execs;
+  `FuzzSegmentScan` (new) 3,851 - it writes a real file per input, Windows file I/O bounds it; `FuzzHint` (new)
+  430,398; `FuzzParseName` (new) 11,078,416; `FuzzManifest` (new) 2,624,574; `FuzzCommitMarker` (new) 4,650,954;
+  `FuzzDB` 465 (~8/s, as expected). `task fuzz` and CI's fuzz-smoke job now run every target.
+- **Coverage** (statements, `-covermode=atomic`), core packages before -> after: root `kvlite` 87.3 -> 87.4 %,
+  `record` 99.3 -> 99.3 %, `segment` 86.3 -> 86.4 %, `keydir` 100 -> 100 %, `manifest` 85.0 -> 85.0 %,
+  `fslock` 91.7 -> 91.7 % (all already above the 80 % bar; `kvcli` 84.6 -> 88.1 %). No padding tests were added.
+- **Perf follow-up done.** `segment.Reader` holds a small handle pool (`DefaultReadHandles`: min(NumCPU, 8) on
+  Windows, 1 on unix) so parallel `Get`s no longer serialise on Go's per-handle `ReadAt` lock. A/B under the same
+  load (`.bench/handles-2026-09-19-*.txt`): `Get/par8` -44 %, `par16` -60 %, `par1` unchanged. The full baseline
+  was **not** refreshed: the box was shared with other test suites for the whole pass and a count=6 run on it would
+  have replaced a clean reference with a noisy one. README's table keeps the committed baseline and says so.
+- **CI.** Run 35477026324 green on every job (test ubuntu + windows `-race`, lint, bench module, fuzz smoke of all
+  seven targets, goreleaser check). Root suite also green in `golang:1.27` on Linux via Docker.
+- **goreleaser.** `.goreleaser.yaml` v2 (linux/windows/darwin x amd64/arm64, `-trimpath -s -w`, version/commit/date
+  stamped, archives + sha256 checksums); `goreleaser check` passes and `goreleaser release --snapshot --clean` builds
+  all six targets locally (`kvlite -version` -> `0.0.1-next (de3da65, ...)`). No LICENSE file exists, so the archive
+  glob `LICENSE*` matches nothing (a warning, not an error). No tag was created; `git tag v0.1.0 && git push --tags`
+  would cut the first release.
