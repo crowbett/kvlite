@@ -1,0 +1,24 @@
+goos: windows
+goarch: amd64
+pkg: github.com/crowbett/kvlite/internal/bench
+cpu: AMD Ryzen 7 3700X 8-Core Processor             
+BenchmarkGet/par1/1KiB-16         	  103737	     13552 ns/op	  75.56 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par1/1KiB-16         	  108258	      9333 ns/op	 109.71 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par1/1KiB-16         	   90787	     18057 ns/op	  56.71 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par1/1KiB-16         	   89780	     24488 ns/op	  41.82 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par1/1KiB-16         	   47991	     40165 ns/op	  25.49 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par1/1KiB-16         	   47708	     21663 ns/op	  47.27 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par8/1KiB-16         	   90196	     14573 ns/op	  70.26 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par8/1KiB-16         	   57433	     22958 ns/op	  44.60 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par8/1KiB-16         	   81432	     15871 ns/op	  64.52 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par8/1KiB-16         	   40609	     25605 ns/op	  39.99 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par8/1KiB-16         	   41530	     32105 ns/op	  31.90 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par8/1KiB-16         	   67479	     35948 ns/op	  28.49 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par16/1KiB-16        	   73425	     21842 ns/op	  46.88 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par16/1KiB-16        	   45325	     39870 ns/op	  25.68 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par16/1KiB-16        	   61059	     66692 ns/op	  15.35 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par16/1KiB-16        	   48477	     60525 ns/op	  16.92 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par16/1KiB-16        	   54663	     26495 ns/op	  38.65 MB/s	    1152 B/op	       1 allocs/op
+BenchmarkGet/par16/1KiB-16        	   77401	     20135 ns/op	  50.86 MB/s	    1152 B/op	       1 allocs/op
+PASS
+ok  	github.com/crowbett/kvlite/internal/bench	305.039s

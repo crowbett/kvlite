@@ -1,0 +1,33 @@
+goos: windows
+goarch: amd64
+pkg: github.com/crowbett/kvlite/internal/bench
+cpu: AMD Ryzen 7 3700X 8-Core Processor             
+                  │ .bench/handles-2026-09-19-before.txt │ .bench/handles-2026-09-19-after.txt │
+                  │                sec/op                │    sec/op     vs base               │
+Get/par1/1KiB-16                           19.86µ ± 102%   17.60µ ± 49%        ~ (p=0.818 n=6)
+Get/par8/1KiB-16                           24.28µ ±  48%   13.57µ ± 66%  -44.10% (p=0.015 n=6)
+Get/par16/1KiB-16                          33.18µ ± 101%   13.24µ ± 40%  -60.10% (p=0.002 n=6)
+geomean                                    25.20µ          14.68µ        -41.75%
+
+                  │ .bench/handles-2026-09-19-before.txt │  .bench/handles-2026-09-19-after.txt   │
+                  │                 B/s                  │      B/s        vs base                │
+Get/par1/1KiB-16                          49.58Mi ± 111%   58.44Mi ±  37%         ~ (p=0.818 n=6)
+Get/par8/1KiB-16                          40.34Mi ±  66%   71.97Mi ± 193%   +78.43% (p=0.015 n=6)
+Get/par16/1KiB-16                         30.67Mi ±  58%   73.77Mi ±  68%  +140.48% (p=0.002 n=6)
+geomean                                   39.44Mi          67.70Mi          +71.65%
+
+                  │ .bench/handles-2026-09-19-before.txt │ .bench/handles-2026-09-19-after.txt  │
+                  │                 B/op                 │     B/op      vs base                │
+Get/par1/1KiB-16                            1.125Ki ± 0%   1.125Ki ± 0%       ~ (p=1.000 n=6) ¹
+Get/par8/1KiB-16                            1.125Ki ± 0%   1.125Ki ± 0%       ~ (p=1.000 n=6) ¹
+Get/par16/1KiB-16                           1.125Ki ± 0%   1.125Ki ± 0%       ~ (p=1.000 n=6) ¹
+geomean                                     1.125Ki        1.125Ki       +0.00%
+¹ all samples are equal
+
+                  │ .bench/handles-2026-09-19-before.txt │ .bench/handles-2026-09-19-after.txt │
+                  │              allocs/op               │  allocs/op   vs base                │
+Get/par1/1KiB-16                              1.000 ± 0%    1.000 ± 0%       ~ (p=1.000 n=6) ¹
+Get/par8/1KiB-16                              1.000 ± 0%    1.000 ± 0%       ~ (p=1.000 n=6) ¹
+Get/par16/1KiB-16                             1.000 ± 0%    1.000 ± 0%       ~ (p=1.000 n=6) ¹
+geomean                                       1.000         1.000       +0.00%
+¹ all samples are equal
