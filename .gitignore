@@ -29,3 +29,4 @@ results/
 
 # Golden segment/hint files are test fixtures, not build logs
 !internal/segment/testdata/**
+.claude/*.local.md

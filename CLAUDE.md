@@ -66,7 +66,7 @@ Imports flow one way: `kvlite -> {record, segment, keydir, manifest, fslock}`, `
   `kvbench` (`.bench/compare-<date>*.txt`).** Never type a figure by hand: rerun the tool on a quiet box,
   commit its output file, then copy rows from that file. The README names the machine and the sync policy
   next to every table; a change to the workload or the machine means a fresh baseline commit.
-- Commit messages are Conventional Commits (hookify enforces).
+- Commit messages are Conventional Commits.
 
 ## Commands (Taskfile.yml)
 `task build|install|run -- <args>`, `task test`, `task test:race`, `task vet`, `task lint`, `task fmt`,
