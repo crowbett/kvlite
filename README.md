@@ -1,5 +1,7 @@
 # kvlite
 
+[![ci](https://github.com/crowbett/kvlite/actions/workflows/ci.yml/badge.svg)](https://github.com/crowbett/kvlite/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/crowbett/kvlite.svg)](https://pkg.go.dev/github.com/crowbett/kvlite) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Embedded bitcask-style key-value store for Go, **zero dependencies**: append-only segments, an in-memory
 keydir (one map lookup + one `ReadAt` per `Get`), hint files for O(keys) startup, crc32c on every record,
 TTL, atomic batches, sorted snapshot iterators and crash-safe compaction. Library first, CLI second, benchmarked
@@ -200,3 +202,7 @@ task compare         # cross-engine go-test benchmarks ; task kvbench -- -n 2000
 - Space amplification before compaction is ~2x under a delete-heavy workload (tombstones and overwritten records stay
   until the next merge); `WithAutoCompact` bounds it, a size-tiered trigger per segment would bound it tighter.
 - Values stream neither in nor out (16 MiB cap, fully in memory).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
