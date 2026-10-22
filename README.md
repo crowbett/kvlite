@@ -2,22 +2,116 @@
 
 [![ci](https://github.com/crowbett/kvlite/actions/workflows/ci.yml/badge.svg)](https://github.com/crowbett/kvlite/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/crowbett/kvlite.svg)](https://pkg.go.dev/github.com/crowbett/kvlite) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Embedded bitcask-style key-value store for Go, **zero dependencies**: append-only segments, an in-memory
-keydir (one map lookup + one `ReadAt` per `Get`), hint files for O(keys) startup, crc32c on every record,
-TTL, atomic batches, sorted snapshot iterators and crash-safe compaction. Library first, CLI second, benchmarked
-against bbolt and pebble on the same workload (numbers below). Design record: `docs/PLAN.md` (ADR-0001).
+**A crash-safe, bitcask-style embedded key-value store in pure Go with zero dependencies. I built it to own every
+byte between `Put` and the disk (torn writes, atomic batches, compaction under live writes) and to measure it against bbolt and pebble.**
+
+**Results** (200k keys, 1 KiB values, fsync off, Ryzen 7 3700X / Windows 11, [`.bench/compare-2026-09-19.txt`](.bench/compare-2026-09-19.txt)):
+**144,258 puts/s** (p99 55.0 µs), 8.7x bbolt's 16,512, and **218,022 gets/s** (p99 10.3 µs). Compaction shrank
+the store from 204.94 to 103.28 MiB. The keydir costs **116 B/key at 1M keys** ([`docs/PLAN.md`](docs/PLAN.md), `TestBytesAtScale`).
+Where it loses: pebble writes 100 B and 1 KiB values 1.9-3.5x faster, and bbolt scans 28-30x faster (full tables [below](#benchmarks)).
+
+## Architecture
+
+```mermaid
+flowchart TD
+    cli["cmd/kvlite<br/>(signal.NotifyContext, wiring)"] --> clifw["internal/cli<br/>subcommand framework"]
+    cli --> kvcli["internal/kvcli<br/>get put del scan stats compact verify bench"]
+    kvcli --> clifw
+    kvcli --> ibench["internal/bench<br/>workload + benchmarks"]
+    kvcli --> db
+    ibench --> db
+    kvbench["bench/ (nested module)<br/>cmd/kvbench + kv.Store adapters"] --> db
+    kvbench --> ibench
+    kvbench --> ext["bbolt v1.5.0, pebble v1.1.5"]
+    db["package kvlite (root)<br/>DB: Put/Get/Delete/Batch, Open + recovery,<br/>Snapshot iterators, Compact, TTL"] --> keydir["internal/keydir<br/>64-way sharded map, 16 B Entry, CAS"]
+    db --> segment["internal/segment<br/>segment Writer/Reader, scan, hints, verify"]
+    db --> manifest["internal/manifest<br/>atomic MANIFEST swap, orphans"]
+    db --> fslock["internal/fslock<br/>LOCK file"]
+    db --> record["internal/record<br/>crc32c record codec"]
+    segment --> record
+    segment -.-> files[("NNNNNNNN.log / .hint")]
+    manifest -.-> mf[("MANIFEST")]
+    fslock -.-> lk[("LOCK")]
+```
+
+The root `go.mod` has no `require` lines; bbolt and pebble are only pulled by the separate `bench/` module (CI guards
+this). Imports flow one way: `kvlite -> {record, segment, keydir, manifest, fslock}`, `segment -> record`.
+
+## Try it in 60 seconds
+
+Requires Go 1.27. No third-party modules are fetched. From the repo root (PowerShell or bash):
+
+```powershell
+go build -o bin/ ./cmd/kvlite                   # or: task build  (bin/kvlite.exe on Windows)
+bin/kvlite put -dir ./data k v
+bin/kvlite get -dir ./data k                    # -> v
+bin/kvlite verify -dir ./data -deep             # crc of every record, hints cross-checked against the logs
+bin/kvlite bench -n 20000 -value 1024 -readers 8 -random
+```
+
+`verify` ends with `findings 0`. `bench` prints put/get/get-miss/scan/delete ops/s with p50/p99, then compacts and
+prints `disk before compact ... after ... (1.98x amplification)`. The whole sequence takes about 30 s with a warm
+module cache. Throughput depends on the box; the committed numbers above come from a quiet run.
+
+As a library:
 
 ```go
+// inside a func() error; imports: context, fmt, time, kvlite
+ctx := context.Background()
 db, err := kvlite.Open("./data", kvlite.WithSync(kvlite.SyncInterval))
+if err != nil {
+    return err
+}
 defer db.Close()
 _ = db.Put([]byte("k"), []byte("v"))
 v, err := db.Get([]byte("k"))                 // fresh copy; kvlite.ErrNotFound when absent or expired
+if err != nil {
+    return err
+}
 _ = db.PutTTL([]byte("session"), v, time.Hour)
 _ = db.Batch().Put([]byte("a"), v).Delete([]byte("k")).Commit()   // all-or-nothing, one commit marker
-snap, _ := db.Snapshot(); defer snap.Close()  // pins the segments it references
-for it := snap.Iter([]byte("prefix")); it.Next(); { k := it.Key(); v, _ := it.Value() }
-_ = db.Compact(ctx)                           // merges, drops dead records, writes hints, swaps MANIFEST
+snap, err := db.Snapshot()                    // pins the segments it references
+if err != nil {
+    return err
+}
+defer snap.Close()
+for it := snap.Iter([]byte("prefix")); it.Next(); {
+    fmt.Println(string(it.Key()))             // it.Value() reads the pinned record
+}
+return db.Compact(ctx)                        // merges, drops dead records, writes hints, swaps MANIFEST
 ```
+
+## Design decisions & trade-offs
+
+- **Bitcask on purpose, with the cost written down.** A `Get` is one sharded-map lookup plus one `ReadAt`
+  ([`db.go:319`](db.go#L319)). The keydir `Entry` is 16 bytes with no pointers, so the GC never scans it
+  ([`internal/keydir/keydir.go:30`](internal/keydir/keydir.go#L30)). The price is that every key lives in RAM, and
+  ordered scans pay an O(keys) snapshot copy. The ADR ([`docs/PLAN.md`](docs/PLAN.md)) lists the rejected alternatives:
+  LSM / B+tree (those are the baselines), an ordered keydir from day one (point ops lose 2-3x), and mmap reads (on
+  Windows a mapped view blocks segment deletion during compaction). The keydir sits behind an `index` interface
+  ([`db.go:62`](db.go#L62)), so an ordered structure can replace it later.
+- **Crash rules are explicit, and each one has a test.** A bad crc at the tail of the active segment is a torn write.
+  Open truncates it and continues ([`recovery.go:305`](recovery.go#L305)). Anywhere else it is `ErrCorrupt` unless the
+  store is opened `WithRepair()`. The live segment set is named by a `MANIFEST` that is written to a temp file, fsynced
+  and renamed into place ([`internal/manifest/manifest.go:148`](internal/manifest/manifest.go#L148)). A compaction
+  killed at any of its five stages leaves orphan files, never a half-visible key set.
+- **Batches use an in-segment commit marker instead of a separate WAL.** Members are flagged, and one trailing marker
+  carries the count and batch id ([`batch.go:15`](batch.go#L15)). Recovery drops any group without its marker
+  ([`recovery.go:419`](recovery.go#L419)). There is one write path and one file to fsync, but a batch can never span
+  two segments.
+- **Compaction runs alongside live writes.** Merged records are adopted by compare-and-swap on `(segment, offset)`
+  ([`compact.go:411`](compact.go#L411)), so a key rewritten mid-merge keeps the newer value. Output ids are reserved
+  before the active segment rotates ([`compact.go:97`](compact.go#L97)), so "higher segment id = newer" holds and
+  recovery needs no per-record timestamp compare. `TestCompactUnderWriters` runs under `-race` in CI.
+- **Windows is a first-class target.** NTFS cannot unlink an open file, so segments are refcounted and retired into
+  `trash/`. Go's `os.File.ReadAt` on Windows serialises on a per-handle lock, so a segment reader opens min(NumCPU, 8)
+  handles ([`internal/segment/segment.go:326`](internal/segment/segment.go#L326)). In an A/B run this cut `Get/par16`
+  from 33.18 to 13.24 µs ([`.bench/handles-2026-09-19-benchstat.txt`](.bench/handles-2026-09-19-benchstat.txt);
+  p=0.002, but the box was loaded and the confidence intervals are wide).
+- **Every parser is fuzzed, and a model-based fuzzer drives the whole DB.** `FuzzDB` runs op scripts against a real
+  store and a `map[string]string` model across reopens. `FuzzSegmentScan` found a real bug: repair could resync into a
+  corrupt tail record and adopt a well-formed record embedded in its value. The fix and the crasher input are committed
+  ([`internal/segment/testdata/fuzz/FuzzSegmentScan/decoy-in-corrupt-tail`](internal/segment/testdata/fuzz/FuzzSegmentScan/decoy-in-corrupt-tail)).
 
 ## How it works
 
@@ -30,7 +124,7 @@ Open   LOCK -> MANIFEST -> trash orphans -> per segment: valid .hint ? load : sc
 ```
 
 - **Keydir**: 64-way sharded `map[string]Entry`, `Entry` is 16 bytes and pointer-free (`Seg, Off, Size, ExpSec uint32`)
-  so the GC never scans it. Measured 116 B/key at 1M x 16 B keys (`TestBytesAtScale`).
+  so the GC never scans it. Measured 116 B/key at 1M keys (`TestBytesAtScale`, recorded in `docs/PLAN.md`).
 - **Records**: `[crc32c:4][plen:4][flags][ts uvarint][expiry uvarint?][klen][vlen][key][value]`, little-endian, crc over
   the payload only; `plen` is bounds-checked so a torn tail is unambiguous. Key <= 64 KiB, value <= 16 MiB.
 - **Hints**: `NNNNNNNN.hint` per sealed segment with a footer crc + count; a bad or missing hint just means "scan the
@@ -148,11 +242,11 @@ file (`.bench/baseline.txt`, `.bench/compare-2026-09-19*.txt`); nothing is typed
 
 Reading it honestly:
 
-- **Writes**: kvlite beats bbolt by 9x (bbolt rewrites B+tree pages and its mmap file grows in 64 MiB steps) and loses to
-  pebble by 2-3.5x at small values. Pebble batches into a memtable and never touches the disk on the put path; kvlite
+- **Writes**: kvlite beats bbolt by 8.7-9.1x (bbolt rewrites B+tree pages and its mmap file grows in 64 MiB steps) and loses to
+  pebble by 1.9-3.5x at 100 B and 1 KiB. Pebble batches into a memtable and never touches the disk on the put path; kvlite
   does one `WriteFile` per put, so the ~4 µs is the Windows syscall, not the encoder (3 allocs, 152 B/op). At 16 KiB
   the picture flips (kvlite 3x pebble): one contiguous append beats a memtable flush + L0 write.
-- **Point reads**: bbolt wins 2-3x because a hit is a memcpy out of the mmap; kvlite pays one `pread` per `Get` and
+- **Point reads**: bbolt wins 2.2-3.3x because a hit is a memcpy out of the mmap; kvlite pays one `pread` per `Get` and
   ~3.5-6 µs is the Windows `ReadFile` floor. Pebble is 4-5x slower than kvlite here (block cache + bloom + LSM levels).
   At 16 KiB the read is dominated by the copy and kvlite and bbolt tie.
 - **Scans**: bbolt's cursor walks mmap'd leaf pages and is in a different league (8M keys/s). kvlite's snapshot iterator
@@ -174,7 +268,10 @@ Reading it honestly:
 ## Testing
 
 ```powershell
-task test            # go test -race -count=1 ./... (root) ; cd bench ; go test -race ./...
+task test            # go test -count=1 ./...   (task test:race adds -race; needs cgo + gcc on Windows)
+go test -race -count=1 ./...                               # root module
+cd bench ; go build ./... ; go vet ./... ; go test ./... ; cd ..   # nested bench module (pulls bbolt + pebble)
+go test -count=1 -coverprofile=coverage.out ./... ; go tool cover -func=coverage.out
 task fuzz            # every parser 30 s each: FuzzRecord, FuzzSegmentScan, FuzzHint, FuzzParseName, FuzzManifest, FuzzCommitMarker
 go test -run '^$' -fuzz='^FuzzDB$' -fuzztime=60s .        # op-script fuzz against a map model, with reopen
 task compare         # cross-engine go-test benchmarks ; task kvbench -- -n 200000 -sizes 100,1024
@@ -192,10 +289,17 @@ task compare         # cross-engine go-test benchmarks ; task kvbench -- -n 2000
   batch without marker, lock contention, orphan sweep, evict-while-reading.
 - CI (`.github/workflows/ci.yml`): ubuntu + windows `-race`, lint v2 + zero-dependency guard on the root `go.mod`,
   bench module build/test + a 2k-key kvbench smoke, 20 s of every fuzzer, `goreleaser check`.
+- Statement coverage (`go tool cover -func`, 2026-10-01): 87.8 % total; root `kvlite` 87.4 %, `record` 99.3 %,
+  `keydir` 100 %, `segment` 86.4 %, `manifest` 85.0 %, `fslock` 91.7 %, `kvcli` 88.1 %.
 
-## Follow-ups
+## What I'd do next
 
-- Keydir behind an `index` interface: an ART or B-tree would make `Snapshot()` O(1) instead of an O(keys) copy.
+Out of scope for v1 (by design, see `docs/PLAN.md`): transactions beyond one atomic `Batch`, secondary indexes,
+replication, network access, MVCC, values larger than memory. The keydir holds every key in RAM (~1.1 GB at 10M
+24-byte keys by the ADR's estimate), and TTL is best-effort wall clock. Every published number comes from one Windows 11 / NTFS
+machine; the suite runs on Linux in CI, but no Linux numbers are published yet.
+
+- Swap the keydir behind the existing `index` interface (`db.go`): an ART or B-tree would make `Snapshot()` O(1) instead of an O(keys) copy.
 - Refresh `.bench/baseline.txt` on a quiet box (`scripts/bench.ps1 -Save baseline -Count 6`) so the table above reflects
   the read handle pool; an mmap read path would remove the per-read syscall entirely, but `Get` at ~3.5 us
   single-threaded is already the `ReadFile` floor.
@@ -205,4 +309,4 @@ task compare         # cross-engine go-test benchmarks ; task kvbench -- -n 2000
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
