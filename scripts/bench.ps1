@@ -79,7 +79,7 @@ function Get-MachineMeta {
         "shell:     PowerShell $($PSVersionTable.PSVersion)",
         "command:   CGO_ENABLED=0 go $($GoArgs -join ' ')",
         "count:     $Count",
-        "results:   $OutFile"
+        "results:   $([System.IO.Path]::GetRelativePath($RepoRoot, $OutFile))"
     )
 }
 

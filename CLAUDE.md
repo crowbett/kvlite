@@ -2,7 +2,7 @@
 
 Embedded bitcask-style key-value store (library, root package `kvlite`) plus a CLI (`cmd/kvlite`).
 Module `github.com/crowbett/kvlite`, Go 1.27, **zero dependencies in the root `go.mod`**.
-Global Go conventions from `~/.claude/CLAUDE.md` apply; this file is the repo-specific part.
+Global Go conventions from the author's user-level `CLAUDE.md` apply; this file is the repo-specific part.
 The design is ADR-0001 in `docs/PLAN.md` - read it before touching anything below `internal/`.
 
 ## Layout

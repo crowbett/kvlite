@@ -2,13 +2,13 @@
 Status: Accepted (owner decisions applied, step 1 scaffolded 2026-09-19) | Date: 2026-09-19 | Module: `github.com/crowbett/kvlite` (Go 1.27)
 
 ## Context
-P11 in `~/dev/ROADMAP.md` Queue 2: "append-only log, in-memory keydir, hint files, crash-safe compaction, CRC, TTL, snapshot
+P11 in `ROADMAP.md` Queue 2: "append-only log, in-memory keydir, hint files, crash-safe compaction, CRC, TTL, snapshot
 iterator. Benchmarks vs bbolt and pebble on the same workload; fuzz test for the log format." Repo does not exist yet; the
-integrator runs `~/dev/new-project.ps1 -Template go-cli -Name kvlite -Module github.com/crowbett/kvlite` and moves
+integrator runs `new-project.ps1 -Template go-cli -Name kvlite -Module github.com/crowbett/kvlite` and moves
 this file to `docs/PLAN.md`. The `go-cli` template supplies `cmd/tool/main.go` (`signal.NotifyContext` -> `cli.New` ->
 `Register(cli.Commands()...)` -> `os.Exit(app.Main(ctx, os.Args[1:]))`), `internal/cli` (`App`, `Command{Name,Summary,Flags,Run}`,
 `Env{Stdout,Stderr,Stdin,Verbose}`, `ErrUsage`, exit codes 0/1/2/130), `.goreleaser.yaml` v2, `.golangci.yml` v2, `Taskfile.yml`,
-and a **zero-dependency `go.mod`**. Bench style comes from `~/dev/go/perf-lab`: `internal/bench/*_bench_test.go`,
+and a **zero-dependency `go.mod`**. Bench style comes from `perf-lab`: `internal/bench/*_bench_test.go`,
 `scripts/bench.ps1` (`-Save baseline` / `-Compare baseline`, count>=6, writes `.bench/<name>.txt` + `.meta.txt` with CPU/Go/OS),
 and its `.bench/README.md` rules (baseline changes only in a dedicated `perf(bench): refresh baseline` commit; unsaved runs go
 to gitignored `results/bench/`). Target box: Ryzen 7 3700X, 16 logical cores, Windows 11, NTFS. Non-goals for v1: transactions
