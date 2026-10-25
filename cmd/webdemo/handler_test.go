@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"runtime"
 	"strings"
@@ -162,5 +163,18 @@ func TestHandleErrors(t *testing.T) {
 		if !ok || !strings.Contains(got["error"], c.want) {
 			t.Errorf("%s %s: got %v, want an error containing %q", c.method, c.params, got, c.want)
 		}
+	}
+}
+
+// TestViewHasNoNulls pins that every list is an array, never null: the page
+// reads .length on each.
+func TestViewHasNoNulls(t *testing.T) {
+	t.Parallel()
+	b, err := json.Marshal(newDemo(t).Handle("state", []byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "null") {
+		t.Errorf("view has a null: %s", b)
 	}
 }

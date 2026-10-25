@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/crowbett/kvlite"
 	"github.com/crowbett/kvlite/internal/fslock"
@@ -37,6 +38,17 @@ type Demo struct {
 	dir  string
 	db   *kvlite.DB
 	logs []string
+	now  time.Time
+}
+
+// tick is the store's clock: simulated, so record timestamps do not depend on
+// when the page runs, and 1 ms apart, so no two records tie.
+func (d *Demo) tick() time.Time {
+	if d.now.IsZero() {
+		d.now = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	d.now = d.now.Add(time.Millisecond)
+	return d.now
 }
 
 // KeyParams names a key, and the value for a put.
@@ -216,7 +228,7 @@ func (d *Demo) open() error {
 	if err := os.MkdirAll(d.dir, 0o750); err != nil {
 		return err
 	}
-	db, err := kvlite.Open(d.dir, kvlite.WithLogger(slog.New(&logHandler{d: d})))
+	db, err := kvlite.Open(d.dir, kvlite.WithLogger(slog.New(&logHandler{d: d})), kvlite.WithClock(d.tick))
 	if err != nil {
 		return err
 	}
@@ -257,7 +269,7 @@ func (d *Demo) view() (View, error) {
 		Files:    []File{},
 		Segments: []Segment{},
 		Keys:     []KV{},
-		Log:      slices.Clone(d.logs),
+		Log:      append([]string{}, d.logs...),
 	}
 	if err := d.files(&v); err != nil {
 		return View{}, err
