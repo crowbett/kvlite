@@ -19,6 +19,7 @@ internal/kvcli/     get/put/del/scan/stats/compact/verify/bench on top of intern
 internal/bench/     kvlite-only benchmarks + the Run workload behind `kvlite bench`              (WS-D)
 internal/cli/       template subcommand framework (App/Command/Env/ErrUsage); unchanged          (integrator)
 cmd/kvlite/         wiring only: NotifyContext -> cli.New -> Register(kvcli.Commands()) -> Main   (integrator)
+cmd/webdemo/        js/wasm demo bridge for crowbett.github.io over the page's in-memory fs       (integrator)
 bench/              NESTED MODULE: kv.Store + kvlite/bbolt/pebble adapters + cmd/kvbench          (WS-D; go.mod integrator)
 scripts/bench.ps1 .bench/   perf-lab style benchmark runner + committed baseline                  (integrator)
 ```
