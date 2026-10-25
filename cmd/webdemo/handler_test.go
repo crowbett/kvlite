@@ -3,9 +3,16 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/crowbett/kvlite/internal/fslock"
+	"github.com/crowbett/kvlite/internal/record"
 )
 
 // newDemo opens a demo store in a temp dir and closes it when the test ends.
@@ -117,6 +124,77 @@ func TestCrash(t *testing.T) {
 	if got := kinds(v.Segments[len(v.Segments)-1]); got != "put:a" {
 		t.Errorf("active segment after recovery %q", got)
 	}
+	if v.Torn != 3 {
+		t.Errorf("torn %d, want 3", v.Torn)
+	}
+	// A tear past the records stops at the segment header.
+	before := call(t, d, "state", `{}`).Segments
+	v = call(t, d, "crash", `{"tear":4096}`)
+	if want := before[len(before)-1].Bytes - 16; v.Torn != want || len(v.Keys) != 0 {
+		t.Errorf("torn %d keys %+v, want %d torn and no keys", v.Torn, v.Keys, want)
+	}
+}
+
+// TestCrashCorrupt tears a record whose value holds a whole encoded record:
+// kvlite finds that decoy after the tear, so the tail is not provably torn and
+// Open refuses with ErrCorrupt. The store stays closed until Reset.
+func TestCrashCorrupt(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("see TestCrash")
+	}
+	d := newDemo(t)
+	call(t, d, "put", `{"key":"a","value":"1"}`)
+	decoy, err := record.Append(nil, record.Record{Key: []byte("x"), Value: []byte("y"), TS: time.UnixMilli(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.db.Put([]byte("b"), append(decoy, "padding"...)); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"crash", "state"} {
+		got, _ := d.Handle(m, []byte(`{"tear":5}`)).(map[string]string)
+		if !strings.Contains(got["error"], "corrupt") || !strings.Contains(got["error"], "Reset starts an empty store") {
+			t.Errorf("%s: got %v, want a corrupt error that points at Reset", m, got)
+		}
+	}
+	if v := call(t, d, "reset", `{}`); v.Stats.Keys != 0 || len(v.Segments) != 1 {
+		t.Errorf("after reset: %+v", v)
+	}
+	if v := call(t, d, "put", `{"key":"c","value":"3"}`); len(v.Keys) != 1 {
+		t.Errorf("put after reset: keys %+v", v.Keys)
+	}
+}
+
+// TestDeterministic pins that the same calls write the same bytes: the store's
+// clock is simulated, so a page shows the same offsets and sizes every run.
+func TestDeterministic(t *testing.T) {
+	t.Parallel()
+	files := func() map[string]string {
+		d := newDemo(t)
+		for i := range 8 {
+			call(t, d, "put", fmt.Sprintf(`{"key":"k%d","value":"v%d"}`, i%3, i))
+		}
+		call(t, d, "delete", `{"key":"k1"}`)
+		call(t, d, "compact", `{}`)
+		call(t, d, "put", `{"key":"k9","value":"late"}`)
+		out := map[string]string{}
+		for _, f := range call(t, d, "state", `{}`).Files {
+			if f.Name == fslock.FileName {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(d.dir, f.Name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[f.Name] = string(b)
+		}
+		return out
+	}
+	a, b := files(), files()
+	if len(a) == 0 || !maps.Equal(a, b) {
+		t.Errorf("two runs wrote different files: %d vs %d", len(a), len(b))
+	}
 }
 
 func TestReset(t *testing.T) {
@@ -170,7 +248,7 @@ func TestHandleErrors(t *testing.T) {
 // reads .length on each.
 func TestViewHasNoNulls(t *testing.T) {
 	t.Parallel()
-	b, err := json.Marshal(newDemo(t).Handle("state", []byte(`{}`)))
+	b, err := json.Marshal(call(t, newDemo(t), "state", `{}`))
 	if err != nil {
 		t.Fatal(err)
 	}

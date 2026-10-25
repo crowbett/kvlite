@@ -41,8 +41,8 @@ type Demo struct {
 	now  time.Time
 }
 
-// tick is the store's clock: simulated, so record timestamps do not depend on
-// when the page runs, and 1 ms apart, so no two records tie.
+// tick is the store's clock: simulated, so the bytes the engine writes do not
+// depend on when the page runs.
 func (d *Demo) tick() time.Time {
 	if d.now.IsZero() {
 		d.now = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -73,6 +73,9 @@ type View struct {
 	KeysMore int        `json:"keysMore"`
 	Log      []string   `json:"log"`
 	Get      *GetResult `json:"get,omitempty"`
+	// Torn is the bytes a crash cut off the active segment: at most the tear
+	// asked for, and never into the 16-byte segment header.
+	Torn int64 `json:"torn"`
 }
 
 // Stats is the subset of kvlite.Stats the page shows.
@@ -152,12 +155,23 @@ func errorResult(err error) map[string]string {
 }
 
 func (d *Demo) handle(method string, params []byte) (View, error) {
-	if d.db == nil {
-		if err := d.open(); err != nil {
+	if method == "reset" {
+		if err := d.reset(); err != nil {
 			return View{}, err
 		}
+		return d.view()
 	}
-	var get *GetResult
+	// A crash can leave a store kvlite refuses to open (ErrCorrupt by design);
+	// the store stays closed until Reset.
+	if d.db == nil {
+		if err := d.open(); err != nil {
+			return View{}, fmt.Errorf("%w (Reset starts an empty store)", err)
+		}
+	}
+	var (
+		get  *GetResult
+		torn int64
+	)
 	switch method {
 	case "state":
 	case "put", "delete", "get":
@@ -202,26 +216,29 @@ func (d *Demo) handle(method string, params []byte) (View, error) {
 		if p.Tear < 0 || p.Tear > maxTear {
 			return View{}, fmt.Errorf("tear must be 0 to %d bytes", maxTear)
 		}
-		if err := d.crash(p.Tear); err != nil {
-			return View{}, err
-		}
-	case "reset":
-		if err := d.db.Close(); err != nil {
-			return View{}, err
-		}
-		d.db, d.logs = nil, nil
-		if err := os.RemoveAll(d.dir); err != nil {
-			return View{}, err
-		}
-		if err := d.open(); err != nil {
-			return View{}, err
+		var err error
+		if torn, err = d.crash(p.Tear); err != nil {
+			return View{}, fmt.Errorf("%w (Reset starts an empty store)", err)
 		}
 	default:
 		return View{}, fmt.Errorf("unknown method %q", method)
 	}
 	v, err := d.view()
-	v.Get = get
+	v.Get, v.Torn = get, torn
 	return v, err
+}
+
+// reset deletes the store and opens an empty one, whatever state it was in.
+func (d *Demo) reset() error {
+	if d.db != nil {
+		_ = d.db.Close() // its files are deleted next; a close error changes nothing
+		d.db = nil
+	}
+	d.logs, d.now = nil, time.Time{}
+	if err := os.RemoveAll(d.dir); err != nil {
+		return err
+	}
+	return d.open()
 }
 
 func (d *Demo) open() error {
@@ -238,24 +255,28 @@ func (d *Demo) open() error {
 
 // crash abandons the open DB without Close. The browser build has no lock
 // primitive, so kvlite's O_EXCL LOCK file survives the crash; it is removed by
-// hand, as internal/fslock says an operator must. Then Open recovers.
-func (d *Demo) crash(tear int64) error {
+// hand, as internal/fslock says an operator must. Then Open recovers, or
+// refuses with ErrCorrupt when a decodable record follows the tear.
+func (d *Demo) crash(tear int64) (int64, error) {
 	active := d.db.Stats().ActiveSegment
 	d.db = nil
 	if err := os.Remove(filepath.Join(d.dir, fslock.FileName)); err != nil {
-		return err
+		return 0, err
 	}
+	var torn int64
 	if tear > 0 {
 		path := filepath.Join(d.dir, segment.LogName(active))
 		fi, err := os.Stat(path)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		if err := os.Truncate(path, max(record.SegmentHeaderSize, fi.Size()-tear)); err != nil {
-			return err
+		size := max(record.SegmentHeaderSize, fi.Size()-tear)
+		if err := os.Truncate(path, size); err != nil {
+			return 0, err
 		}
+		torn = fi.Size() - size
 	}
-	return d.open()
+	return torn, d.open()
 }
 
 func (d *Demo) view() (View, error) {
